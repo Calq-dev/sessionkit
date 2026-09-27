@@ -65,13 +65,30 @@ a fresh start of about 15k tokens, and the one-time write of a cold `--resume`, 
 Claude Code does not show that a session with 800k tokens of context re-reads all of them on
 every call, or that the first message after an idle hour writes them all to the cache again.
 
+With an API key it shows dollars:
+
 ```text
-ctx 475K · $0.095/call · cache warm 40m (cold: $3.80)
-ctx 705K · cache cold: next message ≈ $5.64 · cheaper: sessionkit start --session 9d17b657
+context 475K · $0.095/call · cache warm 40m (cold: $3.80)
+context 705K · cache cold: next message ≈ $5.64 · cheaper: sessionkit start --session 9d17b657
 ```
 
-- **Status line.** It uses what Claude Code hands it (`prompt_cache`, `context_window`) and the
-  end of the transcript before the first response. It turns yellow in the last 10 minutes of
+On a Pro or Max subscription a call costs no dollars but a share of your usage limits, so it
+shows those instead:
+
+```text
+context 475K · 5h 23% (reset 14:10) · 7d 41% · ≈ +0.6%/call · cache warm 40m
+```
+
+The limits come from Claude Code itself (`rate_limits`). **What one call takes** is an estimate
+that sessionkit learns on your machine, because Anthropic does not publish how tokens map to
+the limits. After every call it notes how much the 5-hour limit rose and how large the context
+was; the estimate is the total rise divided by the total context over your last 100 warm calls,
+times the current context. It appears after 5 calls. Other sessions running at the same time
+raise the limit too, so the estimate tends to be high; calls that rewrote a cold cache are kept
+apart.
+
+- **Status line.** It uses what Claude Code hands it (`prompt_cache`, `context_window`,
+  `rate_limits`) and the end of the transcript before the first response. It turns yellow in the last 10 minutes of
   the cache and red when the cache has expired. With `refreshInterval` it counts down.
 - **On `--resume` or fork** (`hook session-start`): when the cache has expired and writing it
   again costs more than $1, it says so before the first message, with Claude Code's own

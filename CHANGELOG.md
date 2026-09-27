@@ -2,6 +2,19 @@
 
 All notable changes to sessionkit, called jev-start before 0.3.0. The format follows [Keep a Changelog](https://keepachangelog.com).
 
+## [0.6.0] - 2026-09-27
+
+### Added
+
+- **Usage limits in the status line on a subscription.** When Claude Code sends `rate_limits`,
+  the status line shows the 5-hour and 7-day limits instead of dollars, and an estimate of what
+  one call takes from the 5-hour limit at the current context. sessionkit learns that estimate
+  locally from how the limit rises per call; it shows after 5 calls.
+
+### Changed
+
+- The status line says `context` instead of `ctx`.
+
 ## [0.5.0] - 2026-09-27
 
 ### Added
@@ -99,7 +112,8 @@ First release.
   every session or turn.
 - A README with usage, how the selection works, the key, and what leaves your machine.
 
-[0.5.0]: https://github.com/Calq-dev/sessionkit/compare/444dd74...main
+[0.6.0]: https://github.com/Calq-dev/sessionkit/compare/b770c59...main
+[0.5.0]: https://github.com/Calq-dev/sessionkit/compare/444dd74...b770c59
 [0.4.0]: https://github.com/Calq-dev/sessionkit/compare/2d6dd9e...444dd74
 [0.3.0]: https://github.com/Calq-dev/sessionkit/compare/aa905ef...2d6dd9e
 [0.2.0]: https://github.com/Calq-dev/sessionkit/compare/55fb775...aa905ef

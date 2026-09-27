@@ -1,6 +1,6 @@
 {
   "name": "sessionkit",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Start, measure and analyse agent sessions: resume with only the context that matters, see where tokens and money go.",
   "type": "module",
   "bin": {

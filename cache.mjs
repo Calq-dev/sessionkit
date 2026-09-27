@@ -40,6 +40,8 @@ function lastCall(transcriptPath) {
       model: entry.message.model,
       fast: usage.speed === "fast",
       context: (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0),
+      read: usage.cache_read_input_tokens ?? 0,
+      write: usage.cache_creation_input_tokens ?? 0,
     };
     if (last && oneHour) break;
   }
@@ -62,6 +64,7 @@ function cacheState(transcriptPath, now = Date.now()) {
     context: call.context,
     model: call.model,
     lastCallTime: call.time,
+    lastCallCold: call.write > call.read,
     ttl: call.ttl,
     warm: left > 0,
     left: Math.max(0, left),
