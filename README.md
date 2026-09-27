@@ -11,6 +11,9 @@ Start, measure and analyse your agent sessions.
   main sessions against subagents, by project, the largest sessions, cold cache rebuilds, and
   sessions that are cheaper to restart than to continue. Local and free.
 - **`sessionkit measure`** measures whether `start` selects the right context.
+- **`sessionkit statusline`** and **`sessionkit hook`** show inside Claude Code what the prompt
+  cache costs: the context, the cost of each call, how long the cache stays warm, and a warning
+  before a cold call rewrites a large context.
 
 ## Install
 
@@ -52,6 +55,42 @@ writes at least 20k tokens to the cache and reads less than it writes.
 150k tokens. Per session it shows what one more call costs in cache reads now, the same after
 a fresh start of about 15k tokens, and the one-time write of a cold `--resume`, with the
 `sessionkit start` command to restart it.
+
+## In Claude Code: status line and hooks
+
+Claude Code does not show that a session with 800k tokens of context re-reads all of them on
+every call, or that the first message after an idle hour writes them all to the cache again.
+
+```text
+ctx 475K · $0.095/call · cache warm 40m (cold: $3.80)
+ctx 705K · cache cold: next message ≈ $5.64 · cheaper: sessionkit start --session 9d17b657
+```
+
+- **Status line.** It uses what Claude Code hands it (`prompt_cache`, `context_window`) and the
+  end of the transcript before the first response. It turns yellow in the last 10 minutes of
+  the cache and red when the cache has expired. With `refreshInterval` it counts down.
+- **On `--resume` or fork** (`hook session-start`): when the cache has expired and writing it
+  again costs more than $1, it says so before the first message, with Claude Code's own
+  estimate (`estimated_cache_write_usd`).
+- **Before a message to a cold session** (`hook prompt`): when writing the context again costs
+  more than $2, it stops the message once and says what it would cost. Send the message again
+  to go ahead. A warning would come too late, because the call would already run.
+
+Nothing here reaches Claude's context: the status line, `systemMessage` and the block `reason`
+are shown to you only, so the checks cost no tokens. In `~/.claude/settings.json`:
+
+```json
+{
+  "statusLine": { "type": "command", "command": "/path/to/sessionkit statusline", "refreshInterval": 60 },
+  "hooks": {
+    "SessionStart": [{ "matcher": "resume|fork", "hooks": [{ "type": "command", "command": "/path/to/sessionkit hook session-start" }] }],
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "/path/to/sessionkit hook prompt", "timeout": 10 }] }]
+  }
+}
+```
+
+Set the limits with `SESSIONKIT_WARN_RESUME_ABOVE` (default 1) and `SESSIONKIT_BLOCK_COLD_ABOVE`
+(default 2). Set the second very high to only warn in the status line.
 
 ## sessionkit start
 
@@ -240,5 +279,7 @@ and shared terms scored at chance.
 | `SESSIONKIT_AGENT` | The default agent for `start`. |
 | `SESSIONKIT_CONFIRM_ABOVE` | Ask before spending more than this many dollars (default 0.05). |
 | `SESSIONKIT_MODEL` | The Jev model (default `jev-latest`). |
+| `SESSIONKIT_WARN_RESUME_ABOVE` | Warn on a resume whose cache write costs more than this (default 1). |
+| `SESSIONKIT_BLOCK_COLD_ABOVE` | Stop a message to a cold session once above this cost (default 2). |
 
 The `JEV_START_*` names from before the rename still work.
