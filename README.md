@@ -122,6 +122,10 @@ anything, so a secret that is in a transcript can end up in all of these places.
 `node eval/measure.mjs` measures the selection with labels that code makes, so a run needs no
 hand work. Results go to `eval/results/` (ignored by git) and hold ids and scores, not text.
 
+**A run costs money.** It sends parts of your transcripts to TypeSafe: about $0.20 for the
+default size (30 cuts, 20 routing pairs), about $0.06 for a smoke test with
+`--cuts 3 --routes 2`. The run prints its token count and cost at the end.
+
 - **Turns.** It cuts a session at turn k and uses the real next prompt. It plants five turns
   with a known label in the free places: the real turn after the prompt (applies), the first
   turn of a session in another project (does not), a stated rule, a plain task, and one
