@@ -1,6 +1,7 @@
 # jev-start
 
-Start a new Claude Code session with the relevant parts of earlier sessions.
+Start a new Claude Code, Codex or jcode session with the relevant parts of earlier Claude Code
+sessions.
 
 A long session with a cold cache is expensive to resume: `claude --resume` sends the whole
 conversation again. jev-start starts a fresh session instead and appends only what matters
@@ -9,7 +10,8 @@ summarizes; everything it keeps stays verbatim.
 
 ## Install
 
-Requires Node.js 20 or later and the `claude` CLI. There are no dependencies.
+Requires Node.js 20 or later and the agent you start: `claude`, `codex` or `jcode`. There are
+no dependencies.
 
 ```sh
 git clone https://github.com/Calq-dev/jev-start.git ~/Projects/jev-start
@@ -25,21 +27,30 @@ jev-start --session "staag emdash" "continue"          # one session, by words f
 jev-start --session 9d17b657 "continue"                # one session, by id or id prefix
 jev-start --session last "continue"                    # the newest session in this folder
 jev-start --dry-run --verbose "…"                      # show the context and scores only
-jev-start "…" -- --permission-mode plan                # everything after -- goes to claude
+jev-start --agent codex --pick "continue"              # start Codex instead of Claude Code
+jev-start "…" -- --permission-mode plan                # everything after -- goes to the agent
 ```
 
 | Option | Meaning |
 | --- | --- |
+| `--agent <name>` | `claude`, `codex` or `jcode`. The default is `claude`, or `JEV_START_AGENT`. |
 | `--pick` | Choose a session from a list of recent sessions in every project. Sessions from this folder come first. |
 | `--session <s>` | Continue one session: an id, an id prefix, `last`, or words from its title. |
 | `--all` | Search the sessions of every project, not only this folder. |
 | `--top <n>` | Keep at most n sessions when searching (default 4). |
-| `--dry-run` | Print the context and the `claude` command. Do not start `claude`. |
+| `--dry-run` | Print the context and the agent command. Do not start the agent. |
 | `--verbose` | Print the Jev score of every session or turn. |
 
-The context is written to `~/.cache/jev-start/<time>.md` and passed with
-`--append-system-prompt-file`. When you continue one session, `claude` starts in that
-session's folder.
+The context is written to `~/.cache/jev-start/<time>.md`. Each agent gets it in its own way:
+
+| Agent | How the context goes in |
+| --- | --- |
+| `claude` | `--append-system-prompt-file <context>`, then your prompt. |
+| `codex` | `-c developer_instructions=<context>`, then your prompt. This replaces any `developer_instructions` in `~/.codex/config.toml` for this session. |
+| `jcode` | jcode takes no first prompt. The first message ("read the context file, then: your prompt") goes to the clipboard. Paste it with Cmd+V. |
+
+When you continue one session, the agent starts in that session's folder. jev-start reads
+Claude Code sessions only; Codex and jcode sessions are not searched.
 
 ## How it works
 

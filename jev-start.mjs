@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// jev-start — start a new Claude Code session with the relevant parts of earlier sessions.
+// jev-start — start a new agent session with the relevant parts of earlier Claude Code sessions.
+// The agent is Claude Code, Codex or jcode.
 //
 // Earlier sessions live as JSONL files under ~/.claude/projects. Jev reads them in two passes:
 //   1. one Noul per session: is this session relevant to the new prompt?
@@ -21,6 +22,7 @@ const OP_REFERENCE = "op://Calq/TypeSafe API/credential";
 const KEYCHAIN_SERVICE = "jev-start";
 const KEYCHAIN_ACCOUNT = "TYPESAFE_API_KEY";
 const PICK_SIZE = 20;
+const AGENTS = ["claude", "codex", "jcode"];
 const PROJECTS_DIR = join(homedir(), ".claude", "projects");
 const CACHE_DIR = join(homedir(), ".cache", "jev-start");
 
@@ -42,12 +44,15 @@ const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
 const REQUEST_BUDGET_CHARS = 100000; // stays well inside the 64k-token request limit
 const CONCURRENCY = 6;
 
-const USAGE = `Usage: jev-start [options] "prompt" [-- claude options]
+const USAGE = `Usage: jev-start [options] "prompt" [-- agent options]
 
-Finds earlier Claude Code sessions relevant to the prompt and starts a new session
-with their relevant exchanges appended to the system prompt.
+Finds earlier Claude Code sessions relevant to the prompt and starts a new agent session
+with their relevant exchanges as context.
 
 Options:
+  --agent <name>  the agent to start: claude, codex or jcode (default claude, or the
+                  JEV_START_AGENT environment variable). jcode takes no first prompt,
+                  so its first message goes to the clipboard to paste
   --pick          choose one session to continue from a list of recent sessions in every
                   project; the newest ones from this folder come first
   --session <s>   continue one session: an id or id prefix, "last" for the newest session
@@ -56,31 +61,36 @@ Options:
                   The new session starts fresh, so a cold cache costs only this context
   --all           use the sessions of every project, not only this folder
   --top <n>       at most n earlier sessions in the context (default ${SHORTLIST_SIZE})
-  --dry-run       print the context and the claude command; do not start claude
+  --dry-run       print the context and the agent command; do not start the agent
   --verbose       print the first-pass score of every session
   -h, --help      show this help
 
-Everything after -- goes to claude unchanged, e.g. -- --model opus --permission-mode plan`;
+Everything after -- goes to the agent unchanged, e.g. -- --model opus --permission-mode plan`;
 
 // ---------------------------------------------------------------- arguments
 
 function parseArguments(argv) {
-  const options = { all: false, top: SHORTLIST_SIZE, dryRun: false, verbose: false, pick: false, session: null, prompt: "", claudeArgs: [] };
+  const options = { all: false, top: SHORTLIST_SIZE, dryRun: false, verbose: false, pick: false, session: null, agent: process.env.JEV_START_AGENT || "claude", prompt: "", agentArgs: [] };
   const words = [];
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    if (arg === "--") { options.claudeArgs = argv.slice(i + 1); break; }
+    if (arg === "--") { options.agentArgs = argv.slice(i + 1); break; }
     if (arg === "--all") options.all = true;
     else if (arg === "--dry-run") options.dryRun = true;
     else if (arg === "--verbose") options.verbose = true;
     else if (arg === "--session") options.session = argv[++i];
     else if (arg === "--pick") options.pick = true;
+    else if (arg === "--agent") options.agent = argv[++i];
     else if (arg === "--top") options.top = Math.max(1, Number(argv[++i]) || SHORTLIST_SIZE);
     else if (arg === "-h" || arg === "--help") { console.log(USAGE); process.exit(0); }
     else words.push(arg);
   }
   options.prompt = words.join(" ").trim();
   if (!options.prompt || options.session === undefined) { console.error(USAGE); process.exit(2); }
+  if (!AGENTS.includes(options.agent)) {
+    console.error(`jev-start: unknown agent "${options.agent}"; use ${AGENTS.join(", ")}.`);
+    process.exit(2);
+  }
   return options;
 }
 
@@ -653,6 +663,27 @@ function renderContext(chosen, continuing) {
   return parts.join("\n");
 }
 
+/**
+ * How to start each agent with the context:
+ * - claude appends the context file to its system prompt;
+ * - codex takes it as developer instructions, a TOML string (JSON escapes are valid TOML);
+ * - jcode has no first-prompt argument, so the first message goes to the clipboard.
+ */
+function launchPlan(agent, prompt, contextFile, context, extraArgs) {
+  if (agent === "claude") {
+    const args = contextFile ? ["--append-system-prompt-file", contextFile] : [];
+    return { command: "claude", args: [...extraArgs, ...args, prompt] };
+  }
+  if (agent === "codex") {
+    const args = contextFile ? ["-c", `developer_instructions=${JSON.stringify(context)}`] : [];
+    return { command: "codex", args: [...extraArgs, ...args, prompt] };
+  }
+  const clipboard = contextFile
+    ? `Read ${contextFile} before you start: it holds context from earlier sessions. Then: ${prompt}`
+    : prompt;
+  return { command: "jcode", args: extraArgs, clipboard };
+}
+
 async function main() {
   const options = parseArguments(process.argv.slice(2));
   const continuing = Boolean(options.session || options.pick);
@@ -670,28 +701,34 @@ async function main() {
       `${continuing && session.summary ? ", with compaction summary" : ""}, ${day(session.end)})\n`);
   }
 
-  const claudeArgs = [...options.claudeArgs];
+  let context = "", contextFile = "";
   if (sessions.length) {
-    const context = renderContext(sessions, continuing);
+    context = renderContext(sessions, continuing);
     mkdirSync(CACHE_DIR, { recursive: true });
-    const contextFile = join(CACHE_DIR, `${new Date().toISOString().replace(/[:.]/g, "-")}.md`);
+    contextFile = join(CACHE_DIR, `${new Date().toISOString().replace(/[:.]/g, "-")}.md`);
     writeFileSync(contextFile, context);
-    claudeArgs.push("--append-system-prompt-file", contextFile);
     process.stderr.write(`jev-start: context in ${contextFile}\n`);
     if (options.dryRun) console.log(context);
   }
-  claudeArgs.push(options.prompt);
+  const plan = launchPlan(options.agent, options.prompt, contextFile, context, options.agentArgs);
 
   if (options.dryRun) {
-    console.log(`\nclaude ${claudeArgs.map((arg) => JSON.stringify(arg)).join(" ")}`);
+    const shown = plan.args.map((arg) => (arg.length > 200 ? `${arg.slice(0, 200)}…` : arg));
+    console.log(`\n${plan.command} ${shown.map((arg) => JSON.stringify(arg)).join(" ")}`);
+    if (plan.clipboard) console.log(`clipboard: ${plan.clipboard}`);
     return;
+  }
+
+  if (plan.clipboard) {
+    execFileSync("pbcopy", { input: plan.clipboard });
+    process.stderr.write("jev-start: the first message is on the clipboard; paste it into jcode with Cmd+V.\n");
   }
 
   // A continued session starts in its own folder, so its paths and project settings apply.
   const folder = continuing ? sessions[0].session.cwd : "";
   const cwd = folder && existsSync(folder) ? folder : process.cwd();
-  if (cwd !== process.cwd()) process.stderr.write(`jev-start: starting claude in ${cwd}\n`);
-  const child = spawn("claude", claudeArgs, { stdio: "inherit", cwd });
+  if (cwd !== process.cwd()) process.stderr.write(`jev-start: starting ${plan.command} in ${cwd}\n`);
+  const child = spawn(plan.command, plan.args, { stdio: "inherit", cwd });
   child.on("exit", (code, signal) => process.exit(signal ? 1 : code ?? 0));
 }
 
