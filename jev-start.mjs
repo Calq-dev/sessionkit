@@ -13,7 +13,8 @@
 // No dependencies. The TypeSafe key comes from TYPESAFE_API_KEY, else from the macOS keychain,
 // else once from 1Password, after which the keychain holds it.
 
-import { appendFileSync, closeSync, createReadStream, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, createReadStream, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
@@ -50,10 +51,11 @@ const COMMANDS_SHOWN = 12;
 const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
 const REQUEST_BUDGET_CHARS = 100000; // stays well inside the 64k-token request limit
 const ROUTE_CANDIDATES = 5;
-const ROUTE_CONTINUE = 0.6;          // continue this session without asking
+const ROUTE_CONTINUE = 0.7;          // continue without asking; measured: 3 of 3 right above it, one wrong at 0.67
 const ROUTE_ASK = 0.3;               // between this and ROUTE_CONTINUE: ask the person
 const SECTION_FLOOR = 0.7;           // rules and open items sit at the top, so they must be clear yeses
 const OPEN_BLOCKS_MAX = 250;         // newest blocks first
+const OPEN_ITEMS_SHOWN = 8;          // measured: 11% of real blocks pass the floor, too many to read
 const OPEN_BLOCK_CHARS = 600;
 const SINCE_COMMITS_SHOWN = 10;
 const SINCE_CHANGES_SHOWN = 20;
@@ -799,11 +801,19 @@ async function continueSession(prompt, session, options) {
     rules: exchanges
       .map((exchange, i) => ({ turn: i + 1, timestamp: exchange.timestamp, text: exchange.prompt, p: rules[i] }))
       .filter((rule) => rule.p >= SECTION_FLOOR),
-    openItems: blocks.map((block, i) => ({ ...block, p: open[i] })).filter((block) => block.p >= SECTION_FLOOR),
+    openItems: blocks.map((block, i) => ({ ...block, p: open[i], order: i }))
+      .filter((block) => block.p >= SECTION_FLOOR)
+      .sort((a, b) => b.p - a.p)
+      .slice(0, OPEN_ITEMS_SHOWN)
+      .sort((a, b) => a.order - b.order),
     since: sinceSession(session),
     startedFrom: options.chains?.get(session.id) ?? null,
   };
-  return { sessions: [{ session, relevance: 1, exchanges: kept, total: exchanges.length, structure }], tokens };
+  return {
+    sessions: [{ session, relevance: 1, exchanges: kept, total: exchanges.length, structure }],
+    tokens,
+    scores: { applies, rules, open, blocks },
+  };
 }
 
 // ---------------------------------------------------------------- context and launch
@@ -1067,7 +1077,16 @@ async function main() {
   child.on("exit", (code, signal) => process.exit(signal ? 1 : code ?? 0));
 }
 
-main().catch((error) => {
-  process.stderr.write(`jev-start: ${error.message}\n`);
-  process.exit(1);
-});
+export {
+  EXCERPT_FLOOR, ROUTE_ASK, ROUTE_CANDIDATES, ROUTE_CONTINUE, SECTION_FLOOR, SHORTLIST_FLOOR, SESSION_TAIL, NEW_TOPIC,
+  askNouls, continueSession, pool, readSession, relevanceQuestion, routeToSession, sessionCard, sessionFiles,
+};
+
+// Run only as a command, not when the measurement script imports this file.
+const invokedAs = process.argv[1] ? realpathSync(process.argv[1]) : "";
+if (invokedAs === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    process.stderr.write(`jev-start: ${error.message}\n`);
+    process.exit(1);
+  });
+}

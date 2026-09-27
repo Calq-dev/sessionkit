@@ -6,10 +6,21 @@ All notable changes to jev-start. The format follows [Keep a Changelog](https://
 
 ### Added
 
+- **A measurement**, `eval/measure.mjs`. It plants turns with a known label into cut sessions
+  and checks routing with cut sessions, so a run needs no hand work. The README has the first
+  run.
+
 - **Session chains.** When jev-start starts Claude Code, it gives the new session a known id
   and notes in `~/.cache/jev-start/chains.jsonl` which sessions it came from. A later run then
   offers the newer session instead of the older one, with the higher relevance of the two,
   and its context points to the context file the newer session began with.
+
+### Changed
+
+- jev-start continues a session on its own at 0.7 instead of 0.6. Measured: three of three
+  right above 0.7, one wrong at 0.67.
+- At most eight open items are shown, the strongest ones. Measured: 11% of real blocks read as
+  open, about fifteen per session.
 
 ## [0.2.0] - 2026-09-27
 
