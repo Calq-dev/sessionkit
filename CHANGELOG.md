@@ -1,27 +1,33 @@
 # Changelog
 
-All notable changes to jev-start. The format follows [Keep a Changelog](https://keepachangelog.com).
+All notable changes to sessionkit, called jev-start before 0.3.0. The format follows [Keep a Changelog](https://keepachangelog.com).
 
-## [Unreleased]
+## [0.3.0] - 2026-09-27
 
 ### Added
 
-- **A cost estimate before spending.** jev-start and the measurement first run dry: no
-  network, neutral answers, the largest sessions where the real run picks by score. They print
-  an upper bound, and ask above $0.05 (`JEV_START_CONFIRM_ABOVE`); `--yes` skips the question.
-- **A measurement**, `eval/measure.mjs`. It plants turns with a known label into cut sessions
-  and checks routing with cut sessions, so a run needs no hand work. The README has the first
-  run.
-
-- **Session chains.** When jev-start starts Claude Code, it gives the new session a known id
-  and notes in `~/.cache/jev-start/chains.jsonl` which sessions it came from. A later run then
-  offers the newer session instead of the older one, with the higher relevance of the two,
-  and its context points to the context file the newer session began with.
+- **`sessionkit usage`**: where the tokens and the money go in your Claude Code sessions, by
+  kind of token, model, main sessions against subagents, project and session, with cold cache
+  rebuilds and sessions that are cheaper to restart. Local and free. It counts tokens from the
+  transcripts and prices them itself, because Claude Code's `cost-state` counts per process.
+- **A cost estimate before spending.** `start` and `measure` first run dry: no network,
+  neutral answers, the largest sessions where the real run picks by score. They print an upper
+  bound, and ask above $0.05 (`SESSIONKIT_CONFIRM_ABOVE`); `--yes` skips the question.
+- **`sessionkit measure`.** It plants turns with a known label into cut sessions and checks
+  routing with cut sessions, so a run needs no hand work. The README has the first run.
+- **Session chains.** When `start` starts Claude Code, it gives the new session a known id and
+  notes which sessions it came from. A later run then offers the newer session instead of the
+  older one, with the higher relevance of the two, and its context points to the context file
+  the newer session began with.
 
 ### Changed
 
-- jev-start continues a session on its own at 0.7 instead of 0.6. Measured: three of three
-  right above 0.7, one wrong at 0.67.
+- **Renamed from jev-start to sessionkit**, with subcommands: `sessionkit start` (the old
+  behaviour, and the default for a bare prompt), `sessionkit usage` and `sessionkit measure`.
+  The cache moved to `~/.cache/sessionkit`, the keychain service to `sessionkit` and the
+  variables to `SESSIONKIT_*`. The old names still work.
+- `start` continues a session on its own at 0.7 instead of 0.6. Measured: three of three right
+  above 0.7, one wrong at 0.67.
 - At most eight open items are shown, the strongest ones. Measured: 11% of real blocks read as
   open, about fifteen per session.
 
@@ -71,6 +77,6 @@ First release.
   every session or turn.
 - A README with usage, how the selection works, the key, and what leaves your machine.
 
-[Unreleased]: https://github.com/Calq-dev/jev-start/compare/aa905ef...main
-[0.2.0]: https://github.com/Calq-dev/jev-start/compare/55fb775...aa905ef
-[0.1.0]: https://github.com/Calq-dev/jev-start/commits/55fb775
+[0.3.0]: https://github.com/Calq-dev/sessionkit/compare/aa905ef...main
+[0.2.0]: https://github.com/Calq-dev/sessionkit/compare/55fb775...aa905ef
+[0.1.0]: https://github.com/Calq-dev/sessionkit/commits/55fb775

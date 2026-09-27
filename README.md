@@ -1,64 +1,101 @@
-# jev-start
+# sessionkit
 
-Start a new Claude Code, Codex or jcode session with the relevant parts of earlier Claude Code
-sessions.
+Start, measure and analyse your agent sessions.
 
-A long session with a cold cache is expensive to resume: `claude --resume` sends the whole
-conversation again. jev-start starts a fresh session instead and appends only what matters
-for your first prompt. [Jev](https://docs.typesafe.ai) selects the parts. It never writes or
-summarizes; everything it keeps stays verbatim.
+- **`sessionkit start`** starts Claude Code, Codex or jcode with the relevant parts of earlier
+  Claude Code sessions. A long session with a cold cache is expensive to resume, and every
+  further call re-reads its whole context. `start` begins fresh and hands over only what
+  matters for your first prompt. [Jev](https://docs.typesafe.ai) (TypeSafe) selects the parts;
+  it never writes or summarizes, so everything kept stays verbatim.
+- **`sessionkit usage`** shows where the tokens and the money go: by kind of token, by model,
+  main sessions against subagents, by project, the largest sessions, cold cache rebuilds, and
+  sessions that are cheaper to restart than to continue. Local and free.
+- **`sessionkit measure`** measures whether `start` selects the right context.
 
 ## Install
 
-Requires Node.js 20 or later and the agent you start: `claude`, `codex` or `jcode`. There are
-no dependencies.
+Requires Node.js 20 or later, and for `start` the agent you start: `claude`, `codex` or
+`jcode`. There are no dependencies.
 
 ```sh
-git clone https://github.com/Calq-dev/jev-start.git ~/Projects/jev-start
-ln -s ~/Projects/jev-start/jev-start.mjs ~/.local/bin/jev-start
+git clone https://github.com/Calq-dev/sessionkit.git ~/Projects/sessionkit
+ln -s ~/Projects/sessionkit/sessionkit.mjs ~/.local/bin/sessionkit
 ```
 
-## Usage
+## sessionkit usage
 
 ```sh
-jev-start "continue with the staag migration"          # Jev sees it continues one session
-jev-start "what was decided about the upload slots?"   # Jev sees a loose question and searches
-jev-start --pick "continue"                            # choose one session from a list
-jev-start --session "staag emdash" "continue"          # one session, by words from its title
-jev-start --session 9d17b657 "continue"                # one session, by id or id prefix
-jev-start --session last "continue"                    # the newest session in this folder
-jev-start --dry-run --verbose "…"                      # show the context and scores only
-jev-start --agent codex --pick "continue"              # start Codex instead of Claude Code
-jev-start "…" -- --permission-mode plan                # everything after -- goes to the agent
+sessionkit usage                     # everything
+sessionkit usage --days 7            # the last week
+sessionkit usage --project lankquote # one project
+sessionkit usage --json              # the numbers as JSON
 ```
+
+It reads the transcripts under `~/.claude/projects`, main sessions and the subagents stored
+beside them, and adds up the usage every API call records: uncached input, cache reads, cache
+writes (5 minutes and 1 hour) and output. A response written as several lines, or a call a
+forked session copied, is counted once.
+
+Costs are API-equivalent: token counts times the published per-token prices, including the
+lower cache-read prices of Claude Opus 5.5 and Claude Fable 5.1 and double prices for fast
+mode. With a subscription you pay a flat fee instead, so read them as the value of what you
+used. A model without a known price is named, and its tokens are left out of the costs.
+
+Claude Code's own `cost-state` per session is not used. It counts per process, so a resumed
+session starts again at zero; compared with the transcripts it came out both too low and too
+high.
+
+**Cold cache rebuilds** are a heuristic: a call after a pause of more than 5 minutes that
+writes at least 20k tokens to the cache and reads less than it writes.
+
+**Cheaper to restart** lists sessions active in the last 14 days whose last context is above
+150k tokens. Per session it shows what one more call costs in cache reads now, the same after
+a fresh start of about 15k tokens, and the one-time write of a cold `--resume`, with the
+`sessionkit start` command to restart it.
+
+## sessionkit start
+
+```sh
+sessionkit "continue with the staag migration"          # Jev sees it continues one session
+sessionkit "what was decided about the upload slots?"   # Jev sees a loose question and searches
+sessionkit start --pick "continue"                      # choose one session from a list
+sessionkit start --session "staag emdash" "continue"    # one session, by words from its title
+sessionkit start --session 9d17b657 "continue"          # one session, by id or id prefix
+sessionkit start --session last "continue"              # the newest session in this folder
+sessionkit start --dry-run --verbose "…"                # show the context and scores only
+sessionkit start --agent codex --pick "continue"        # start Codex instead of Claude Code
+sessionkit start "…" -- --permission-mode plan          # everything after -- goes to the agent
+```
+
+A prompt without a command means `start`.
 
 | Option | Meaning |
 | --- | --- |
-| `--agent <name>` | `claude`, `codex` or `jcode`. The default is `claude`, or `JEV_START_AGENT`. |
+| `--agent <name>` | `claude`, `codex` or `jcode`. The default is `claude`, or `SESSIONKIT_AGENT`. |
 | `--search` | Always search. Do not let Jev decide to continue one session. |
 | `--pick` | Choose a session from a list of recent sessions in every project. Sessions from this folder come first. |
 | `--session <s>` | Continue one session: an id, an id prefix, `last`, or words from its title. |
 | `--all` | Search the sessions of every project, not only this folder. This is the default when the folder has no sessions. |
 | `--top <n>` | Keep at most n sessions when searching (default 4). |
-| `--yes` | Do not ask before spending. See "What it costs". |
+| `--yes` | Do not ask before spending. See "What start costs". |
 | `--dry-run` | Print the context and the agent command. Do not start the agent. |
 | `--verbose` | Print the Jev score of every session or turn. |
 
-The context is written to `~/.cache/jev-start/<time>.md`. Each agent gets it in its own way:
+The context is written to `~/.cache/sessionkit/<time>.md`. Each agent gets it in its own way:
 
 | Agent | How the context goes in |
 | --- | --- |
 | `claude` | `--append-system-prompt-file <context>`, then your prompt. |
 | `codex` | `-c developer_instructions=<context>`, then your prompt. This replaces any `developer_instructions` in `~/.codex/config.toml` for this session. |
-| `jcode` | jcode takes no first prompt. jev-start waits for the new session to appear in `~/.jcode/active_pids` and sends the first message ("read the context file, then: your prompt") to that session id with `jcode transcript -S`. The message is also on the clipboard, in case it does not arrive. |
+| `jcode` | jcode takes no first prompt. sessionkit waits for the new session to appear in `~/.jcode/active_pids` and sends the first message ("read the context file, then: your prompt") to that session id with `jcode transcript -S`. The message is also on the clipboard, in case it does not arrive. |
 
-When you continue one session, the agent starts in that session's folder. When jev-start
+When you continue one session, the agent starts in that session's folder. When sessionkit
 starts Claude Code, it notes the new session id and the sessions it came from in
-`~/.cache/jev-start/chains.jsonl`. A later run then offers the newer session instead of the
-older one. jev-start reads
-Claude Code sessions only; Codex and jcode sessions are not searched.
+`~/.cache/sessionkit/chains.jsonl`. A later run then offers the newer session instead of the
+older one. sessionkit reads Claude Code sessions only; Codex and jcode sessions are not
+searched.
 
-## How it works
+### How start selects
 
 Sessions are the JSONL transcripts in `~/.claude/projects`. An exchange is a prompt you typed
 plus the last text Claude wrote before your next prompt. Shell commands you ran with `!` are
@@ -70,7 +107,7 @@ not exchanges.
    prompt? It sees a card with the title, folder, branch, every request with the start of its
    outcome, and the final outcome. Sessions at 0.3 or higher go on.
 2. Jev chooses between the five best sessions and "new topic": does the prompt continue one
-   of them? At 0.7 or higher for one session, jev-start continues it. Between 0.3 and 0.7 it
+   of them? At 0.7 or higher for one session, sessionkit continues it. Between 0.3 and 0.7 it
    asks you. Otherwise it searches.
 
 **Searching:** Jev asks one question per exchange in the best sessions: does this exchange
@@ -93,18 +130,18 @@ help with the new prompt? Exchanges at 0.5 or higher are kept, within about 6k t
    files the session changed, its last commands, the last compaction summary, and the turns:
    the first, the last two, and the ones that still apply. The budget is about 15k tokens.
 
-## What it costs
+### What start costs
 
-Before it sends anything, jev-start runs the whole selection dry: no network, a neutral answer
+Before it sends anything, `start` runs the whole selection dry: no network, a neutral answer
 to every question, and the largest sessions wherever the real run would pick by score. It
 counts the characters it would send and prints an upper bound:
 
 ```text
-jev-start: at most $0.04 (32 requests, at most 974,524 tokens)
-jev-start: 149 sessions read, 4 relevant (209,834 Jev tokens, about $0.0088)
+sessionkit: at most $0.04 (32 requests, at most 974,524 tokens)
+sessionkit: 149 sessions read, 4 relevant (209,834 Jev tokens, about $0.0088)
 ```
 
-Above $0.05 it asks before it spends anything. Set the limit with `JEV_START_CONFIRM_ABOVE`,
+Above $0.05 it asks before it spends anything. Set the limit with `SESSIONKIT_CONFIRM_ABOVE`,
 or skip the question with `--yes`. Measured on 27 September 2026:
 
 | Run | Estimate | Real |
@@ -116,37 +153,38 @@ or skip the question with `--yes`. Measured on 27 September 2026:
 The estimate converts characters to tokens at 3.5 per token; a real run measured 3.76, so the
 estimate stays on the high side.
 
-## The TypeSafe key
+### The TypeSafe key
 
-jev-start looks for the key in this order:
+`start` and `measure` look for the key in this order:
 
 1. `TYPESAFE_API_KEY` in the environment.
-2. The macOS keychain, service `jev-start`.
+2. The macOS keychain, service `sessionkit` (or `jev-start`, the name before the rename).
 3. 1Password (`op://Calq/TypeSafe API/credential`), once. The key then goes into the keychain,
    so 1Password does not ask again.
 
-If TypeSafe refuses the stored key, jev-start reads it again from 1Password. To remove the
+If TypeSafe refuses the stored key, sessionkit reads it again from 1Password. To remove the
 stored copy:
 
 ```sh
-security delete-generic-password -s jev-start
+security delete-generic-password -s sessionkit
 ```
 
-## What leaves your machine
+### What leaves your machine
 
-Parts of your transcripts go to TypeSafe: session cards, outlines and exchanges. The kept
-exchanges also go into the context file and the new session. jev-start does not redact
-anything, so a secret that is in a transcript can end up in all of these places.
+`usage` sends nothing. `start` and `measure` send parts of your transcripts to TypeSafe:
+session cards, outlines and exchanges. The kept exchanges also go into the context file and
+the new session. sessionkit does not redact anything, so a secret that is in a transcript can
+end up in all of these places.
 
-## Measured
+## sessionkit measure
 
-`node eval/measure.mjs` measures the selection with labels that code makes, so a run needs no
-hand work. Results go to `eval/results/` (ignored by git) and hold ids and scores, not text.
+`measure` checks the selection of `start` with labels that code makes, so a run needs no hand
+work. Results go to `eval/results/` (ignored by git) and hold ids and scores, not text.
 
 **A run costs money.** It sends parts of your transcripts to TypeSafe: about $0.20 for the
 default size (30 cuts, 20 routing pairs), about $0.06 for a smoke test with
-`--cuts 3 --routes 2`. Like jev-start, it first estimates the cost dry and asks before it
-spends. `--estimate` stops after the estimate; `--yes` skips the question.
+`--cuts 3 --routes 2`. It first estimates the cost dry and asks before it spends. `--estimate`
+stops after the estimate; `--yes` skips the question.
 
 - **Turns.** It cuts a session at turn k and uses the real next prompt. It plants five turns
   with a known label in the free places: the real turn after the prompt (applies), the first
@@ -170,11 +208,10 @@ Run of 27 September 2026 (seed 7, 8 cuts, 24 routing items, $0.21):
   takes the strongest turns first, does the real selection.
 - 11% of real blocks read as open: about fifteen per session, more than a reader wants. Hence
   the cap of eight.
-- Routing: jev-start continued on its own four times, three times right (0.72 to 0.87) and
-  once wrong (0.67). The threshold is now 0.7. Of the other later prompts, the right session
-  was often not among the candidates: a mid-session prompt such as "can you also add X" does
-  not name its subject. A real jev-start prompt usually does, so these items are harder than
-  real use.
+- Routing: `start` continued on its own four times, three times right (0.72 to 0.87) and once
+  wrong (0.67). The threshold is now 0.7. Of the other later prompts, the right session was
+  often not among the candidates: a mid-session prompt such as "can you also add X" does not
+  name its subject. A real prompt usually does, so these items are harder than real use.
 - First prompts routed to a new topic 9 times out of 12.
 
 Earlier labels from shared files and shared terms were dropped: most turns change no file,
@@ -182,13 +219,26 @@ and shared terms scored at chance.
 
 ## Limits
 
-- The measurement below is small: 8 cuts and 24 routing items from one person's sessions.
+- The measurement above is small: 8 cuts and 24 routing items from one person's sessions.
 - Jev sees later turns only in short form, so an open item that a later turn finished can
   still show as open.
-- Session chains only cover Claude Code sessions that jev-start started. A session you
+- Session chains only cover Claude Code sessions that sessionkit started. A session you
   continued by hand, or with Codex or jcode, still competes with the session it came from.
 - Jev performs best in English. Prompts and transcripts in other languages work, but have not
   been evaluated.
 - `--session last` picks the newest session in the folder. If a session is running there, it
   picks that one.
+- The cold-cache count in `usage` is a heuristic; a changed prompt prefix also rewrites the
+  cache without a pause.
 - The transcript format of Claude Code is not a public contract and can change.
+
+## Environment
+
+| Variable | Meaning |
+| --- | --- |
+| `TYPESAFE_API_KEY` | The TypeSafe key, before the keychain and 1Password. |
+| `SESSIONKIT_AGENT` | The default agent for `start`. |
+| `SESSIONKIT_CONFIRM_ABOVE` | Ask before spending more than this many dollars (default 0.05). |
+| `SESSIONKIT_MODEL` | The Jev model (default `jev-latest`). |
+
+The `JEV_START_*` names from before the rename still work.

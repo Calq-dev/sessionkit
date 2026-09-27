@@ -1,5 +1,5 @@
-#!/usr/bin/env node
-// Measure whether jev-start selects the right turns and routes to the right session.
+// sessionkit measure — measure whether sessionkit start selects the right turns and routes to the
+// right session.
 //
 // Labels come from code, so a run needs no hand work and can be repeated:
 //   A. Turn selection. Cut a session at turn k; the real next prompt is the new task. Plant
@@ -20,7 +20,7 @@
 // A run costs money. It first runs dry, without network, to estimate the cost, and asks
 // before it spends anything. --yes skips the question; --estimate stops after the estimate.
 //
-// Usage: node eval/measure.mjs [--cuts 30] [--routes 20] [--seed 1] [--yes] [--estimate]
+// Usage: sessionkit measure [--cuts 30] [--routes 20] [--seed 1] [--yes] [--estimate]
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -29,21 +29,22 @@ import {
   EXCERPT_FLOOR, NEW_TOPIC, ROUTE_ASK, ROUTE_CANDIDATES, ROUTE_CONTINUE, SECTION_FLOOR, SESSION_TAIL, SHORTLIST_FLOOR,
   askNouls, continueSession, pool, readSession, relevanceQuestion, routeToSession, sessionCard, sessionFiles,
   startEstimate, stopEstimate,
-} from "../jev-start.mjs";
+} from "./start.mjs";
 import { createInterface } from "node:readline";
 
-const RESULTS_DIR = join(dirname(fileURLToPath(import.meta.url)), "results");
+const RESULTS_DIR = join(dirname(fileURLToPath(import.meta.url)), "eval", "results");
 const POOL_SIZE = 150;
 const MIN_TURNS = 6;
 const MIN_PROMPT_CHARS = 40;
 
+let argv = [];
 const argument = (name, fallback) => {
-  const i = process.argv.indexOf(`--${name}`);
-  return i > 0 ? Number(process.argv[i + 1]) : fallback;
+  const i = argv.indexOf(`--${name}`);
+  return i >= 0 ? Number(argv[i + 1]) : fallback;
 };
-const CUTS = argument("cuts", 30);
-const ROUTES = argument("routes", 20);
-let seed = argument("seed", 1);
+let CUTS = 30;
+let ROUTES = 20;
+let seed = 1;
 
 /** A small seeded generator, so a run can be repeated with the same sample. */
 function random() {
@@ -257,7 +258,7 @@ async function measureRoutes(sessions) {
   return { rows, tokens, summary: { continue: summarize("continue"), new: summarize("new") } };
 }
 
-const flag = (name) => process.argv.includes(`--${name}`);
+const flag = (name) => argv.includes(`--${name}`);
 
 async function confirm(question) {
   if (!process.stdin.isTTY) return false;
@@ -273,7 +274,11 @@ async function measureAll(sessions) {
   return { turns, routes };
 }
 
-async function main() {
+async function measureMain(args) {
+  argv = args;
+  CUTS = argument("cuts", 30);
+  ROUTES = argument("routes", 20);
+  seed = argument("seed", 1);
   const files = sessionFiles(true, POOL_SIZE);
   const sessions = (await pool(files, (file) => readSession(file.path)))
     .filter((session) => session.exchanges.length > 0);
@@ -290,7 +295,7 @@ async function main() {
     `at most ${cost.tokens.toLocaleString("en")} tokens, at most $${cost.cost_usd.toFixed(2)}\n`);
   if (flag("estimate")) return;
   if (!flag("yes") && !(await confirm(`Spend at most $${cost.cost_usd.toFixed(2)} on this run? [y/N] `))) {
-    process.stderr.write("measure: stopped before spending anything.\n");
+    process.stderr.write("sessionkit measure: stopped before spending anything.\n");
     process.exit(2);
   }
 
@@ -312,7 +317,4 @@ async function main() {
   console.log(JSON.stringify({ turns: result.turns, routes: result.routes, tokens, cost_usd: result.cost_usd, file }, null, 2));
 }
 
-main().catch((error) => {
-  process.stderr.write(`measure: ${error.message}\n`);
-  process.exit(1);
-});
+export { measureMain };
