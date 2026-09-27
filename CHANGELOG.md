@@ -2,6 +2,15 @@
 
 All notable changes to jev-start. The format follows [Keep a Changelog](https://keepachangelog.com).
 
+## [Unreleased]
+
+### Added
+
+- **Session chains.** When jev-start starts Claude Code, it gives the new session a known id
+  and notes in `~/.cache/jev-start/chains.jsonl` which sessions it came from. A later run then
+  offers the newer session instead of the older one, with the higher relevance of the two,
+  and its context points to the context file the newer session began with.
+
 ## [0.2.0] - 2026-09-27
 
 ### Added
@@ -48,5 +57,6 @@ First release.
   every session or turn.
 - A README with usage, how the selection works, the key, and what leaves your machine.
 
-[0.2.0]: https://github.com/Calq-dev/jev-start/compare/55fb775...main
+[Unreleased]: https://github.com/Calq-dev/jev-start/compare/aa905ef...main
+[0.2.0]: https://github.com/Calq-dev/jev-start/compare/55fb775...aa905ef
 [0.1.0]: https://github.com/Calq-dev/jev-start/commits/55fb775

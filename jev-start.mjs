@@ -13,7 +13,8 @@
 // No dependencies. The TypeSafe key comes from TYPESAFE_API_KEY, else from the macOS keychain,
 // else once from 1Password, after which the keychain holds it.
 
-import { closeSync, createReadStream, existsSync, mkdirSync, openSync, readSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, createReadStream, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { createInterface } from "node:readline";
@@ -30,6 +31,7 @@ const JCODE_ACTIVE_DIR = join(homedir(), ".jcode", "active_pids");
 const JCODE_WAIT_MS = 15000;
 const PROJECTS_DIR = join(homedir(), ".claude", "projects");
 const CACHE_DIR = join(homedir(), ".cache", "jev-start");
+const CHAINS_FILE = join(CACHE_DIR, "chains.jsonl");
 
 const MAX_SESSIONS_SCANNED = 150;    // newest first; older sessions are rarely the context you want
 const SHORTLIST_FLOOR = 0.3;         // below this a session is a clear no
@@ -235,6 +237,51 @@ async function askNouls(state, questions, budget = REQUEST_BUDGET_CHARS) {
     for (const i of indexes) probabilities[i] = data.answers?.[`q${i}`]?.noul ?? 0;
   });
   return { probabilities, tokens };
+}
+
+// ---------------------------------------------------------------- chains
+
+/**
+ * Sessions that jev-start started, by their id: which sessions they came from and the context
+ * file they began with. Only Claude Code sessions, because only those are searched.
+ */
+function readChains() {
+  const chains = new Map();
+  if (!existsSync(CHAINS_FILE)) return chains;
+  for (const line of readFileSync(CHAINS_FILE, "utf8").split("\n")) {
+    try {
+      const record = JSON.parse(line);
+      if (record.child) chains.set(record.child, record);
+    } catch {
+      // A torn line from an interrupted write; skip it.
+    }
+  }
+  return chains;
+}
+
+function recordChain(child, parents, contextFile) {
+  mkdirSync(CACHE_DIR, { recursive: true });
+  appendFileSync(CHAINS_FILE, `${JSON.stringify({ child, parents, contextFile, at: new Date().toISOString() })}\n`);
+}
+
+/**
+ * Replace a session that a later jev-start session continued by that newer session, which
+ * carries the work on. The newer one takes the higher relevance of the two: its own card
+ * may be about the latest step only, while the prompt names the older subject.
+ */
+function followChains(scored, chains) {
+  const byId = new Map(scored.map((item) => [item.session.id, item]));
+  const continued = new Set();
+  for (const record of chains.values()) {
+    const child = byId.get(record.child);
+    if (!child) continue;
+    for (const parent of record.parents.map((id) => byId.get(id)).filter(Boolean)) {
+      child.relevance = Math.max(child.relevance, parent.relevance);
+      child.session.continues = [...(child.session.continues ?? []), parent.session.title || parent.session.id];
+      continued.add(parent.session.id);
+    }
+  }
+  return scored.filter(({ session }) => !continued.has(session.id)).sort((a, b) => b.relevance - a.relevance);
 }
 
 /** One Choice question against a state. Returns the answer with its probabilities. */
@@ -648,6 +695,7 @@ function routeCard(session) {
     date: day(session.end),
     last_requests: session.exchanges.slice(-3).map((exchange) => clip(exchange.prompt, 250)),
     final_outcome: clip(session.exchanges.at(-1)?.answer ?? "", 500),
+    ...(session.continues ? { continues_earlier_session: session.continues } : {}),
   };
 }
 
@@ -753,6 +801,7 @@ async function continueSession(prompt, session, options) {
       .filter((rule) => rule.p >= SECTION_FLOOR),
     openItems: blocks.map((block, i) => ({ ...block, p: open[i] })).filter((block) => block.p >= SECTION_FLOOR),
     since: sinceSession(session),
+    startedFrom: options.chains?.get(session.id) ?? null,
   };
   return { sessions: [{ session, relevance: 1, exchanges: kept, total: exchanges.length, structure }], tokens };
 }
@@ -762,7 +811,13 @@ async function continueSession(prompt, session, options) {
 /** Rules the person stated, open items, and what changed since: the top of a continuation. */
 function structureSections(session, structure) {
   const lines = [];
-  const { since, rules, openItems } = structure;
+  const { since, rules, openItems, startedFrom } = structure;
+  if (startedFrom) {
+    lines.push("", "### Where this session came from", "",
+      `This session was itself started by jev-start, with context from ${startedFrom.parents.length} ` +
+      `earlier session(s): ${startedFrom.parents.join(", ")}. That context is in ${startedFrom.contextFile}. ` +
+      "Read it when you need the history before this session.");
+  }
   if (since) {
     lines.push("", "### Since the session", "");
     lines.push(`- Branch now: ${since.branch || "unknown"}` +
@@ -924,10 +979,11 @@ function launchPlan(agent, prompt, contextFile, context, extraArgs) {
 async function main() {
   const options = parseArguments(process.argv.slice(2));
   let continuing = Boolean(options.session || options.pick);
+  const chains = readChains();
   let tokens = 0, scanned = 1, sessions = [];
   if (continuing) {
     process.stderr.write("jev-start: reading the session…\n");
-    const result = await continueSession(options.prompt, await chooseSession(options), options);
+    const result = await continueSession(options.prompt, await chooseSession(options), { ...options, chains });
     ({ sessions } = result);
     tokens = result.tokens;
   } else {
@@ -935,7 +991,8 @@ async function main() {
     const first = await scoreSessions(options.prompt, options);
     ({ scanned } = first);
     tokens = first.tokens;
-    const candidates = first.scored.filter((item) => item.relevance >= SHORTLIST_FLOOR).slice(0, ROUTE_CANDIDATES);
+    const candidates = followChains(first.scored, chains)
+      .filter((item) => item.relevance >= SHORTLIST_FLOOR).slice(0, ROUTE_CANDIDATES);
     let target = null;
     if (!options.search && candidates.length) {
       const route = await routeToSession(options.prompt, candidates, options);
@@ -951,7 +1008,7 @@ async function main() {
     if (target) {
       continuing = true;
       process.stderr.write(`jev-start: continuing "${target.title || target.id}"\n`);
-      const result = await continueSession(options.prompt, target, options);
+      const result = await continueSession(options.prompt, target, { ...options, chains });
       ({ sessions } = result);
       tokens += result.tokens;
     } else {
@@ -980,6 +1037,10 @@ async function main() {
     if (options.dryRun) console.log(context);
   }
   const plan = launchPlan(options.agent, options.prompt, contextFile, context, options.agentArgs);
+  // A known id lets a later run see that this new session continues the ones it came from.
+  const ownsSessionId = !options.agentArgs.some((arg) => /^--(session-id|resume|continue)$|^-[rc]$/.test(arg));
+  const childId = options.agent === "claude" && sessions.length && ownsSessionId ? randomUUID() : null;
+  if (childId) plan.args.unshift("--session-id", childId);
 
   if (options.dryRun) {
     const shown = plan.args.map((arg) => (arg.length > 200 ? `${arg.slice(0, 200)}…` : arg));
@@ -998,6 +1059,7 @@ async function main() {
   const folder = continuing ? sessions[0].session.cwd : "";
   const cwd = folder && existsSync(folder) ? folder : process.cwd();
   if (cwd !== process.cwd()) process.stderr.write(`jev-start: starting ${plan.command} in ${cwd}\n`);
+  if (childId) recordChain(childId, sessions.map(({ session }) => session.id), contextFile);
   const before = new Set(sessionsOf(JCODE_ACTIVE_DIR));
   const launchedAt = Date.now();
   const child = spawn(plan.command, plan.args, { stdio: "inherit", cwd });

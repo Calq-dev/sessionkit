@@ -51,7 +51,10 @@ The context is written to `~/.cache/jev-start/<time>.md`. Each agent gets it in 
 | `codex` | `-c developer_instructions=<context>`, then your prompt. This replaces any `developer_instructions` in `~/.codex/config.toml` for this session. |
 | `jcode` | jcode takes no first prompt. jev-start waits for the new session to appear in `~/.jcode/active_pids` and sends the first message ("read the context file, then: your prompt") to that session id with `jcode transcript -S`. The message is also on the clipboard, in case it does not arrive. |
 
-When you continue one session, the agent starts in that session's folder. jev-start reads
+When you continue one session, the agent starts in that session's folder. When jev-start
+starts Claude Code, it notes the new session id and the sessions it came from in
+`~/.cache/jev-start/chains.jsonl`. A later run then offers the newer session instead of the
+older one. jev-start reads
 Claude Code sessions only; Codex and jcode sessions are not searched.
 
 ## How it works
@@ -118,8 +121,8 @@ anything, so a secret that is in a transcript can end up in all of these places.
 - The thresholds (0.3, 0.5, 0.6 and 0.7) were checked on a few sessions, not on a labelled set.
 - Jev sees later turns only in short form, so an open item that a later turn finished can
   still show as open.
-- When you continued a session with jev-start, the old and the new session both match. Jev
-  then often doubts between them and asks you.
+- Session chains only cover Claude Code sessions that jev-start started. A session you
+  continued by hand, or with Codex or jcode, still competes with the session it came from.
 - Jev performs best in English. Prompts and transcripts in other languages work, but have not
   been evaluated.
 - `--session last` picks the newest session in the folder. If a session is running there, it
