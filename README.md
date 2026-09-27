@@ -17,13 +17,17 @@ Start, measure and analyse your agent sessions.
 
 ## Install
 
-Requires Node.js 20 or later, and for `start` the agent you start: `claude`, `codex` or
-`jcode`. There are no dependencies.
+Requires Node.js 20 or later, access to the Calq-dev GitHub organisation, and for `start` the
+agent you start: `claude`, `codex` or `jcode`. There are no dependencies.
 
 ```sh
-git clone https://github.com/Calq-dev/sessionkit.git ~/Projects/sessionkit
-ln -s ~/Projects/sessionkit/sessionkit.mjs ~/.local/bin/sessionkit
+npm install -g github:Calq-dev/sessionkit   # the sessionkit command; run again to update
+sessionkit setup                            # the status line and hooks in Claude Code
 ```
+
+`start` and `measure` also need the TypeSafe key: they read it from 1Password
+(`op://Calq/TypeSafe API/credential`) once and keep it in the keychain. `usage`, the status
+line and the hooks need no key and no network.
 
 ## sessionkit usage
 
@@ -77,17 +81,14 @@ ctx 705K · cache cold: next message ≈ $5.64 · cheaper: sessionkit start --se
   to go ahead. A warning would come too late, because the call would already run.
 
 Nothing here reaches Claude's context: the status line, `systemMessage` and the block `reason`
-are shown to you only, so the checks cost no tokens. In `~/.claude/settings.json`:
+are shown to you only, so the checks cost no tokens.
 
-```json
-{
-  "statusLine": { "type": "command", "command": "/path/to/sessionkit statusline", "refreshInterval": 60 },
-  "hooks": {
-    "SessionStart": [{ "matcher": "resume|fork", "hooks": [{ "type": "command", "command": "/path/to/sessionkit hook session-start" }] }],
-    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "/path/to/sessionkit hook prompt", "timeout": 10 }] }]
-  }
-}
-```
+`sessionkit setup` writes all three into `~/.claude/settings.json`, with the path where
+sessionkit is installed on your machine. A Claude Code plugin can ship hooks but not a status
+line, which is why this is a command and not a plugin. It makes a backup first, leaves your
+other settings and hooks alone, and can run again safely. It asks before it replaces a status
+line that is not sessionkit's (`--force` skips the question). `sessionkit setup --remove` takes
+everything out again.
 
 Set the limits with `SESSIONKIT_WARN_RESUME_ABOVE` (default 1) and `SESSIONKIT_BLOCK_COLD_ABOVE`
 (default 2). Set the second very high to only warn in the status line.

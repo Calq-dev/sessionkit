@@ -2,6 +2,16 @@
 
 All notable changes to sessionkit, called jev-start before 0.3.0. The format follows [Keep a Changelog](https://keepachangelog.com).
 
+## [0.5.0] - 2026-09-27
+
+### Added
+
+- **`sessionkit setup`** puts the status line and both hooks in `~/.claude/settings.json` with
+  the path where sessionkit is installed: backup first, other settings and hooks untouched,
+  safe to run again, asks before replacing another status line, `--remove` to undo.
+- **Install with npm**: `npm install -g github:Calq-dev/sessionkit` gives the `sessionkit`
+  command.
+
 ## [0.4.0] - 2026-09-27
 
 ### Added
@@ -89,7 +99,8 @@ First release.
   every session or turn.
 - A README with usage, how the selection works, the key, and what leaves your machine.
 
-[0.4.0]: https://github.com/Calq-dev/sessionkit/compare/2d6dd9e...main
+[0.5.0]: https://github.com/Calq-dev/sessionkit/compare/444dd74...main
+[0.4.0]: https://github.com/Calq-dev/sessionkit/compare/2d6dd9e...444dd74
 [0.3.0]: https://github.com/Calq-dev/sessionkit/compare/aa905ef...2d6dd9e
 [0.2.0]: https://github.com/Calq-dev/sessionkit/compare/55fb775...aa905ef
 [0.1.0]: https://github.com/Calq-dev/sessionkit/commits/55fb775

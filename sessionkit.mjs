@@ -5,6 +5,7 @@
 //   sessionkit usage    where the tokens and the money go in your Claude Code sessions
 //   sessionkit measure  measure whether start selects the right context
 //   sessionkit statusline, sessionkit hook   show in Claude Code what the prompt cache costs
+//   sessionkit setup    put the status line and hooks in Claude Code's settings
 //
 // A prompt without a command means start.
 
@@ -16,6 +17,7 @@ Usage:
   sessionkit measure [options]          measure the selection of start (costs money)
   sessionkit statusline                 Claude Code status line: context, cost per call, cache
   sessionkit hook session-start|prompt  Claude Code hooks: warn on a costly resume or cold message
+  sessionkit setup [--remove]           install the status line and hooks in Claude Code
   sessionkit "prompt"                   the same as start
 
 Run sessionkit <command> --help for the options of a command.`;
@@ -26,6 +28,7 @@ const COMMANDS = {
   measure: async (argv) => (await import("./measure.mjs")).measureMain(argv),
   statusline: async () => (await import("./claude.mjs")).statuslineMain(),
   hook: async (argv) => (await import("./claude.mjs")).hookMain(argv),
+  setup: async (argv) => (await import("./setup.mjs")).setupMain(argv),
 };
 
 const [command, ...rest] = process.argv.slice(2);
