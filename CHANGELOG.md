@@ -2,6 +2,26 @@
 
 All notable changes to jev-start. The format follows [Keep a Changelog](https://keepachangelog.com).
 
+## [0.2.0] - 2026-09-27
+
+### Added
+
+- **Jev decides the mode.** Without `--session`, `--pick` or `--search`, Jev chooses between
+  the five best sessions and "new topic". A clear continuation (0.6 or higher) continues that
+  session; a possible one (0.3 to 0.6) asks you; otherwise jev-start searches. `--search`
+  always searches.
+- **Rules and open items at the top of a continuation.** Jev asks per turn whether the
+  request states a lasting rule or preference, and per block of a conclusion whether it is
+  still open. Both need 0.7 or higher and appear verbatim.
+- **What changed since the session**, from git: the branch now, the commits after the
+  session, the uncommitted changes, and which files of the session changed afterwards.
+
+### Changed
+
+- When the current folder has no sessions, jev-start searches every project, so it works
+  from any terminal.
+- Turns in a continuation are numbered, so the rules and open items point to them.
+
 ## [0.1.0] - 2026-09-27
 
 First release.
@@ -28,4 +48,5 @@ First release.
   every session or turn.
 - A README with usage, how the selection works, the key, and what leaves your machine.
 
-[0.1.0]: https://github.com/Calq-dev/jev-start/commits/main
+[0.2.0]: https://github.com/Calq-dev/jev-start/compare/55fb775...main
+[0.1.0]: https://github.com/Calq-dev/jev-start/commits/55fb775

@@ -21,7 +21,8 @@ ln -s ~/Projects/jev-start/jev-start.mjs ~/.local/bin/jev-start
 ## Usage
 
 ```sh
-jev-start "what was decided about the upload slots?"   # find relevant sessions yourself
+jev-start "continue with the staag migration"          # Jev sees it continues one session
+jev-start "what was decided about the upload slots?"   # Jev sees a loose question and searches
 jev-start --pick "continue"                            # choose one session from a list
 jev-start --session "staag emdash" "continue"          # one session, by words from its title
 jev-start --session 9d17b657 "continue"                # one session, by id or id prefix
@@ -34,9 +35,10 @@ jev-start "…" -- --permission-mode plan                # everything after -- g
 | Option | Meaning |
 | --- | --- |
 | `--agent <name>` | `claude`, `codex` or `jcode`. The default is `claude`, or `JEV_START_AGENT`. |
+| `--search` | Always search. Do not let Jev decide to continue one session. |
 | `--pick` | Choose a session from a list of recent sessions in every project. Sessions from this folder come first. |
 | `--session <s>` | Continue one session: an id, an id prefix, `last`, or words from its title. |
-| `--all` | Search the sessions of every project, not only this folder. |
+| `--all` | Search the sessions of every project, not only this folder. This is the default when the folder has no sessions. |
 | `--top <n>` | Keep at most n sessions when searching (default 4). |
 | `--dry-run` | Print the context and the agent command. Do not start the agent. |
 | `--verbose` | Print the Jev score of every session or turn. |
@@ -58,27 +60,36 @@ Sessions are the JSONL transcripts in `~/.claude/projects`. An exchange is a pro
 plus the last text Claude wrote before your next prompt. Shell commands you ran with `!` are
 not exchanges.
 
-**Searching** (a prompt only):
+**Deciding** (a prompt only):
 
 1. Jev asks one yes/no question per session: did this session work on the subject of the new
    prompt? It sees a card with the title, folder, branch, every request with the start of its
    outcome, and the final outcome. Sessions at 0.3 or higher go on.
-2. Jev asks one question per exchange in those sessions: does this exchange help with the new
-   prompt? Exchanges at 0.5 or higher are kept, within about 6k tokens.
+2. Jev chooses between the five best sessions and "new topic": does the prompt continue one
+   of them? At 0.6 or higher for one session, jev-start continues it. Between 0.3 and 0.6 it
+   asks you. Otherwise it searches.
 
-**Continuing one session** (`--session` or `--pick`):
+**Searching:** Jev asks one question per exchange in the best sessions: does this exchange
+help with the new prompt? Exchanges at 0.5 or higher are kept, within about 6k tokens.
+
+**Continuing one session** (chosen by Jev, or with `--session` or `--pick`):
 
 1. Jev sees the whole session as an outline: every turn with its request, the start of its
    conclusion and the files it changed. The goal is your prompt plus the last three prompts
    of the session, so a vague prompt such as "continue" still works.
 2. Jev asks per turn: does this still apply? A preference or rule you stated still applies
    after the work is done. A turn that a later turn replaced, or a one-off step, does not.
-3. The context holds the last compaction summary, the first turn, the last two turns, the
-   turns Jev kept, the files the session changed, and the last commands it ran. The budget is
-   about 15k tokens.
+   It also asks per turn: does this request state a rule or preference?
+3. Jev cuts every conclusion into paragraphs and list items, and asks per block: is this
+   still open? Rules and open items need 0.7 or higher, because they go at the top.
+4. Git adds what changed since the session: the branch now, the commits after it, the
+   uncommitted changes, and which files of the session changed afterwards.
+5. The context starts with what changed since, your rules, and the open items. Then come the
+   files the session changed, its last commands, the last compaction summary, and the turns:
+   the first, the last two, and the ones that still apply. The budget is about 15k tokens.
 
-A search over 150 sessions costs about $0.02 at Jev's price. Continuing one session costs
-less than a tenth of a cent.
+A search over 150 sessions costs about $0.01 to $0.02 at Jev's price. Continuing one session
+costs a few tenths of a cent.
 
 ## The TypeSafe key
 
@@ -104,7 +115,11 @@ anything, so a secret that is in a transcript can end up in all of these places.
 
 ## Limits
 
-- The thresholds (0.3 and 0.5) were checked on a few sessions, not on a labelled set.
+- The thresholds (0.3, 0.5, 0.6 and 0.7) were checked on a few sessions, not on a labelled set.
+- Jev sees later turns only in short form, so an open item that a later turn finished can
+  still show as open.
+- When you continued a session with jev-start, the old and the new session both match. Jev
+  then often doubts between them and asks you.
 - Jev performs best in English. Prompts and transcripts in other languages work, but have not
   been evaluated.
 - `--session last` picks the newest session in the folder. If a session is running there, it
