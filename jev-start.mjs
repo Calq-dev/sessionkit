@@ -60,6 +60,7 @@ const OPEN_BLOCK_CHARS = 600;
 const SINCE_COMMITS_SHOWN = 10;
 const SINCE_CHANGES_SHOWN = 20;
 const CONCURRENCY = 6;
+const CONFIRM_ABOVE_USD = Number(process.env.JEV_START_CONFIRM_ABOVE ?? 0.05);
 
 const USAGE = `Usage: jev-start [options] "prompt" [-- agent options]
 
@@ -81,6 +82,9 @@ Options:
   --all           use the sessions of every project, not only this folder (the default
                   when this folder has no sessions)
   --top <n>       at most n earlier sessions in the context (default ${SHORTLIST_SIZE})
+  --yes           do not ask before spending; jev-start first estimates the cost without
+                  sending anything, and asks when it is above $${CONFIRM_ABOVE_USD}
+                  (JEV_START_CONFIRM_ABOVE)
   --dry-run       print the context and the agent command; do not start the agent
   --verbose       print the first-pass score of every session
   -h, --help      show this help
@@ -93,7 +97,7 @@ Everything after -- goes to the agent unchanged, e.g. -- --model opus --permissi
 // ---------------------------------------------------------------- arguments
 
 function parseArguments(argv) {
-  const options = { all: false, top: SHORTLIST_SIZE, dryRun: false, verbose: false, pick: false, search: false, session: null, agent: process.env.JEV_START_AGENT || "claude", prompt: "", agentArgs: [] };
+  const options = { all: false, top: SHORTLIST_SIZE, dryRun: false, verbose: false, pick: false, search: false, yes: false, session: null, agent: process.env.JEV_START_AGENT || "claude", prompt: "", agentArgs: [] };
   const words = [];
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -104,6 +108,7 @@ function parseArguments(argv) {
     else if (arg === "--session") options.session = argv[++i];
     else if (arg === "--pick") options.pick = true;
     else if (arg === "--search") options.search = true;
+    else if (arg === "--yes") options.yes = true;
     else if (arg === "--agent") options.agent = argv[++i];
     else if (arg === "--top") options.top = Math.max(1, Number(argv[++i]) || SHORTLIST_SIZE);
     else if (arg === "-h" || arg === "--help") { console.log(USAGE); process.exit(0); }
@@ -169,11 +174,49 @@ function key() {
   return apiKey;
 }
 
+// ---------------------------------------------------------------- estimating
+
+const CHARS_PER_TOKEN = 3.5;         // measured 3.76 on a real run; lower, so the estimate stays an upper bound
+const PRICE_PER_MILLION_TOKENS = 0.042;
+let estimate = null;
+
+/**
+ * While estimating, nothing goes to TypeSafe: every request is counted and gets a neutral
+ * answer (0.5 for a Noul, an even spread for a Choice). Branches that depend on a score
+ * then all open, so the count is an upper bound.
+ */
+function startEstimate() {
+  estimate = { chars: 0, requests: 0 };
+}
+
+function stopEstimate() {
+  const { chars, requests } = estimate;
+  estimate = null;
+  const tokens = Math.ceil(chars / CHARS_PER_TOKEN);
+  return { chars, requests, tokens, cost_usd: (tokens / 1e6) * PRICE_PER_MILLION_TOKENS };
+}
+
+function neutralResponse(body, chars) {
+  const answers = Object.fromEntries(Object.entries(body.questions).map(([id, question]) => {
+    if (question.type !== "choice") return [id, { type: "noul", noul: 0.5 }];
+    const options = Object.keys(question.criteria);
+    const probabilities = Object.fromEntries(options.map((option) => [option, 1 / options.length]));
+    return [id, { type: "choice", choice: options.at(-1), probabilities, confidence: 0 }];
+  }));
+  return { model: "estimate", answers, usage: { input_tokens: Math.ceil(chars / CHARS_PER_TOKEN), output_tokens: 0 } };
+}
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const retryable = (status) => status === 408 || status === 429 || status >= 500;
 
 /** One System One call, with the SDKs' default retry policy: two retries with backoff. */
 async function post(body) {
+  if (estimate) {
+    const chars = JSON.stringify(body).length;
+    estimate.chars += chars;
+    estimate.requests++;
+    return neutralResponse(body, chars);
+  }
   for (let attempt = 0; ; attempt++) {
     let response;
     try {
@@ -274,6 +317,7 @@ function recordChain(child, parents, contextFile) {
 function followChains(scored, chains) {
   const byId = new Map(scored.map((item) => [item.session.id, item]));
   const continued = new Set();
+  for (const item of scored) delete item.session.continues;
   for (const record of chains.values()) {
     const child = byId.get(record.child);
     if (!child) continue;
@@ -438,7 +482,15 @@ function isHumanPrompt(entry) {
  * Read one session into exchanges: a human prompt and the last text the assistant wrote
  * before the next prompt. The last text is usually the conclusion of that turn.
  */
-async function readSession(path) {
+const sessionCache = new Map();
+
+/** Read a session once per run: the estimate and the real run use the same sessions. */
+function readSession(path) {
+  if (!sessionCache.has(path)) sessionCache.set(path, parseSession(path));
+  return sessionCache.get(path);
+}
+
+async function parseSession(path) {
   const session = {
     id: basename(path, ".jsonl"), path, title: "", cwd: "", branch: "", start: "", end: "",
     summary: null, exchanges: [], changedFiles: new Map(), commands: [],
@@ -986,47 +1038,78 @@ function launchPlan(agent, prompt, contextFile, context, extraArgs) {
   return { command: "jcode", args: extraArgs, firstMessage };
 }
 
-async function main() {
-  const options = parseArguments(process.argv.slice(2));
-  let continuing = Boolean(options.session || options.pick);
-  const chains = readChains();
-  let tokens = 0, scanned = 1, sessions = [];
-  if (continuing) {
-    process.stderr.write("jev-start: reading the session…\n");
-    const result = await continueSession(options.prompt, await chooseSession(options), { ...options, chains });
-    ({ sessions } = result);
-    tokens = result.tokens;
-  } else {
-    process.stderr.write("jev-start: reading earlier sessions…\n");
-    const first = await scoreSessions(options.prompt, options);
-    ({ scanned } = first);
-    tokens = first.tokens;
-    const candidates = followChains(first.scored, chains)
-      .filter((item) => item.relevance >= SHORTLIST_FLOOR).slice(0, ROUTE_CANDIDATES);
-    let target = null;
+/**
+ * Select the context: continue the chosen session, or score all sessions, route, and then
+ * continue one or search. While estimating, both routes are taken, so the count covers
+ * whichever the real run picks.
+ */
+async function collect(options, chains, chosen, estimating) {
+  const quiet = estimating ? { ...options, verbose: false } : options;
+  if (chosen) {
+    const result = await continueSession(options.prompt, chosen, { ...quiet, chains });
+    return { sessions: result.sessions, tokens: result.tokens, scanned: 1, continuing: true };
+  }
+  const first = await scoreSessions(options.prompt, quiet);
+  let tokens = first.tokens;
+  const candidates = followChains(first.scored, chains)
+    .filter((item) => item.relevance >= SHORTLIST_FLOOR).slice(0, ROUTE_CANDIDATES);
+
+  if (estimating) {
+    // Every score is neutral here, so rank by size: the largest sessions are the worst case
+    // for whichever sessions the real run picks.
+    const size = ({ session }) => session.exchanges.reduce((sum, e) => sum + Math.min(e.prompt.length, 1200) + Math.min(e.answer.length, 2500), 0);
+    const largest = [...first.scored].sort((a, b) => size(b) - size(a));
     if (!options.search && candidates.length) {
-      const route = await routeToSession(options.prompt, candidates, options);
-      tokens += route.tokens;
-      if (route.session && route.probability >= ROUTE_CONTINUE) {
-        target = route.session;
-      } else if (route.session && route.probability >= ROUTE_ASK && process.stdin.isTTY) {
-        const answer = await askPerson(`Continue "${route.session.title || route.session.id}" ` +
-          `(${day(route.session.end)}, ${basename(route.session.cwd)})? [Y/n] `);
-        if (!/^n/i.test(answer)) target = route.session;
-      }
+      tokens += (await routeToSession(options.prompt, largest.slice(0, ROUTE_CANDIDATES), quiet)).tokens;
+      tokens += (await continueSession(options.prompt, largest[0].session, { ...quiet, chains })).tokens;
     }
-    if (target) {
-      continuing = true;
-      process.stderr.write(`jev-start: continuing "${target.title || target.id}"\n`);
-      const result = await continueSession(options.prompt, target, { ...options, chains });
-      ({ sessions } = result);
-      tokens += result.tokens;
-    } else {
-      const result = await gatherExchanges(options.prompt, first.scored, options);
-      ({ sessions } = result);
-      tokens += result.tokens;
+    tokens += (await gatherExchanges(options.prompt, largest, quiet)).tokens;
+    return { sessions: [], tokens, scanned: first.scanned, continuing: false };
+  }
+
+  let target = null;
+  if (!options.search && candidates.length) {
+    const route = await routeToSession(options.prompt, candidates, options);
+    tokens += route.tokens;
+    if (route.session && route.probability >= ROUTE_CONTINUE) {
+      target = route.session;
+    } else if (route.session && route.probability >= ROUTE_ASK && process.stdin.isTTY) {
+      const answer = await askPerson(`Continue "${route.session.title || route.session.id}" ` +
+        `(${day(route.session.end)}, ${basename(route.session.cwd)})? [Y/n] `);
+      if (!/^n/i.test(answer)) target = route.session;
     }
   }
+  if (target) {
+    process.stderr.write(`jev-start: continuing "${target.title || target.id}"\n`);
+    const result = await continueSession(options.prompt, target, { ...options, chains });
+    return { sessions: result.sessions, tokens: tokens + result.tokens, scanned: first.scanned, continuing: true };
+  }
+  const result = await gatherExchanges(options.prompt, first.scored, options);
+  return { sessions: result.sessions, tokens: tokens + result.tokens, scanned: first.scanned, continuing: false };
+}
+
+async function main() {
+  const options = parseArguments(process.argv.slice(2));
+  const chains = readChains();
+  const chosen = options.session || options.pick ? await chooseSession(options) : null;
+  process.stderr.write(chosen ? "jev-start: reading the session…\n" : "jev-start: reading earlier sessions…\n");
+
+  // Count what the run would send before sending anything, and ask when it is not trivial.
+  startEstimate();
+  await collect(options, chains, chosen, true);
+  const estimated = stopEstimate();
+  process.stderr.write(`jev-start: at most $${estimated.cost_usd.toFixed(estimated.cost_usd < 0.01 ? 4 : 2)} ` +
+    `(${estimated.requests} requests, at most ${estimated.tokens.toLocaleString("en")} tokens)\n`);
+  if (estimated.cost_usd > CONFIRM_ABOVE_USD && !options.yes) {
+    const spend = process.stdin.isTTY
+      && /^y/i.test(await askPerson(`Spend at most $${estimated.cost_usd.toFixed(2)} on Jev? [y/N] `));
+    if (!spend) {
+      process.stderr.write("jev-start: stopped before spending anything. Add --yes to skip this question.\n");
+      process.exit(2);
+    }
+  }
+
+  const { sessions, tokens, scanned, continuing } = await collect(options, chains, chosen, false);
 
   const cost = (tokens / 1e6) * 0.042;
   process.stderr.write(`jev-start: ${scanned} sessions read, ${sessions.length} relevant ` +
@@ -1080,6 +1163,7 @@ async function main() {
 export {
   EXCERPT_FLOOR, ROUTE_ASK, ROUTE_CANDIDATES, ROUTE_CONTINUE, SECTION_FLOOR, SHORTLIST_FLOOR, SESSION_TAIL, NEW_TOPIC,
   askNouls, continueSession, pool, readSession, relevanceQuestion, routeToSession, sessionCard, sessionFiles,
+  startEstimate, stopEstimate,
 };
 
 // Run only as a command, not when the measurement script imports this file.

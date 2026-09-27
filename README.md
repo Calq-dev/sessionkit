@@ -40,6 +40,7 @@ jev-start "…" -- --permission-mode plan                # everything after -- g
 | `--session <s>` | Continue one session: an id, an id prefix, `last`, or words from its title. |
 | `--all` | Search the sessions of every project, not only this folder. This is the default when the folder has no sessions. |
 | `--top <n>` | Keep at most n sessions when searching (default 4). |
+| `--yes` | Do not ask before spending. See "What it costs". |
 | `--dry-run` | Print the context and the agent command. Do not start the agent. |
 | `--verbose` | Print the Jev score of every session or turn. |
 
@@ -92,8 +93,28 @@ help with the new prompt? Exchanges at 0.5 or higher are kept, within about 6k t
    files the session changed, its last commands, the last compaction summary, and the turns:
    the first, the last two, and the ones that still apply. The budget is about 15k tokens.
 
-A search over 150 sessions costs about $0.01 to $0.02 at Jev's price. Continuing one session
-costs a few tenths of a cent.
+## What it costs
+
+Before it sends anything, jev-start runs the whole selection dry: no network, a neutral answer
+to every question, and the largest sessions wherever the real run would pick by score. It
+counts the characters it would send and prints an upper bound:
+
+```text
+jev-start: at most $0.04 (32 requests, at most 974,524 tokens)
+jev-start: 149 sessions read, 4 relevant (209,834 Jev tokens, about $0.0088)
+```
+
+Above $0.05 it asks before it spends anything. Set the limit with `JEV_START_CONFIRM_ABOVE`,
+or skip the question with `--yes`. Measured on 27 September 2026:
+
+| Run | Estimate | Real |
+| --- | --- | --- |
+| Continue one session | at most $0.0017 | $0.0017 |
+| Search 149 sessions, loose question | at most $0.04 | $0.0088 |
+| Search 149 sessions, continuation | at most $0.04 | $0.0060 |
+
+The estimate converts characters to tokens at 3.5 per token; a real run measured 3.76, so the
+estimate stays on the high side.
 
 ## The TypeSafe key
 
@@ -124,7 +145,8 @@ hand work. Results go to `eval/results/` (ignored by git) and hold ids and score
 
 **A run costs money.** It sends parts of your transcripts to TypeSafe: about $0.20 for the
 default size (30 cuts, 20 routing pairs), about $0.06 for a smoke test with
-`--cuts 3 --routes 2`. The run prints its token count and cost at the end.
+`--cuts 3 --routes 2`. Like jev-start, it first estimates the cost dry and asks before it
+spends. `--estimate` stops after the estimate; `--yes` skips the question.
 
 - **Turns.** It cuts a session at turn k and uses the real next prompt. It plants five turns
   with a known label in the free places: the real turn after the prompt (applies), the first

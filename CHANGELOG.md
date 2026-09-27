@@ -6,6 +6,9 @@ All notable changes to jev-start. The format follows [Keep a Changelog](https://
 
 ### Added
 
+- **A cost estimate before spending.** jev-start and the measurement first run dry: no
+  network, neutral answers, the largest sessions where the real run picks by score. They print
+  an upper bound, and ask above $0.05 (`JEV_START_CONFIRM_ABOVE`); `--yes` skips the question.
 - **A measurement**, `eval/measure.mjs`. It plants turns with a known label into cut sessions
   and checks routing with cut sessions, so a run needs no hand work. The README has the first
   run.

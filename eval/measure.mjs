@@ -17,7 +17,10 @@
 //
 // Results hold ids, turn numbers, scores and labels, never transcript text.
 //
-// Usage: node eval/measure.mjs [--cuts 30] [--routes 20] [--seed 1]
+// A run costs money. It first runs dry, without network, to estimate the cost, and asks
+// before it spends anything. --yes skips the question; --estimate stops after the estimate.
+//
+// Usage: node eval/measure.mjs [--cuts 30] [--routes 20] [--seed 1] [--yes] [--estimate]
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -25,7 +28,9 @@ import { fileURLToPath } from "node:url";
 import {
   EXCERPT_FLOOR, NEW_TOPIC, ROUTE_ASK, ROUTE_CANDIDATES, ROUTE_CONTINUE, SECTION_FLOOR, SESSION_TAIL, SHORTLIST_FLOOR,
   askNouls, continueSession, pool, readSession, relevanceQuestion, routeToSession, sessionCard, sessionFiles,
+  startEstimate, stopEstimate,
 } from "../jev-start.mjs";
+import { createInterface } from "node:readline";
 
 const RESULTS_DIR = join(dirname(fileURLToPath(import.meta.url)), "results");
 const POOL_SIZE = 150;
@@ -252,6 +257,22 @@ async function measureRoutes(sessions) {
   return { rows, tokens, summary: { continue: summarize("continue"), new: summarize("new") } };
 }
 
+const flag = (name) => process.argv.includes(`--${name}`);
+
+async function confirm(question) {
+  if (!process.stdin.isTTY) return false;
+  const readline = createInterface({ input: process.stdin, output: process.stderr });
+  const answer = await new Promise((resolve) => readline.question(question, resolve));
+  readline.close();
+  return /^y/i.test(answer.trim());
+}
+
+async function measureAll(sessions) {
+  const turns = await measureTurns(sessions);
+  const routes = ROUTES > 0 ? await measureRoutes(sessions) : { rows: [], tokens: 0, summary: null };
+  return { turns, routes };
+}
+
 async function main() {
   const files = sessionFiles(true, POOL_SIZE);
   const sessions = (await pool(files, (file) => readSession(file.path)))
@@ -259,8 +280,21 @@ async function main() {
   process.stderr.write(`loaded ${sessions.length} sessions from ${files.length} files\n`);
   if (!sessions.length) throw new Error("No sessions loaded.");
 
-  const turns = await measureTurns(sessions);
-  const routes = ROUTES > 0 ? await measureRoutes(sessions) : { rows: [], tokens: 0, summary: null };
+  // The dry run draws the same sample as the real one: the seed goes back afterwards.
+  const startSeed = seed;
+  startEstimate();
+  await measureAll(sessions);
+  const cost = stopEstimate();
+  seed = startSeed;
+  process.stderr.write(`estimate: ${cost.requests} requests, ${cost.chars.toLocaleString("en")} characters, ` +
+    `at most ${cost.tokens.toLocaleString("en")} tokens, at most $${cost.cost_usd.toFixed(2)}\n`);
+  if (flag("estimate")) return;
+  if (!flag("yes") && !(await confirm(`Spend at most $${cost.cost_usd.toFixed(2)} on this run? [y/N] `))) {
+    process.stderr.write("measure: stopped before spending anything.\n");
+    process.exit(2);
+  }
+
+  const { turns, routes } = await measureAll(sessions);
   const tokens = turns.tokens + routes.tokens;
   const result = {
     run: new Date().toISOString(),
