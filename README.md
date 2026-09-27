@@ -47,7 +47,7 @@ The context is written to `~/.cache/jev-start/<time>.md`. Each agent gets it in 
 | --- | --- |
 | `claude` | `--append-system-prompt-file <context>`, then your prompt. |
 | `codex` | `-c developer_instructions=<context>`, then your prompt. This replaces any `developer_instructions` in `~/.codex/config.toml` for this session. |
-| `jcode` | jcode takes no first prompt. The first message ("read the context file, then: your prompt") goes to the clipboard. Paste it with Cmd+V. |
+| `jcode` | jcode takes no first prompt. jev-start waits for the new session to appear in `~/.jcode/active_pids` and sends the first message ("read the context file, then: your prompt") to that session id with `jcode transcript -S`. The message is also on the clipboard, in case it does not arrive. |
 
 When you continue one session, the agent starts in that session's folder. jev-start reads
 Claude Code sessions only; Codex and jcode sessions are not searched.

@@ -23,6 +23,8 @@ const KEYCHAIN_SERVICE = "jev-start";
 const KEYCHAIN_ACCOUNT = "TYPESAFE_API_KEY";
 const PICK_SIZE = 20;
 const AGENTS = ["claude", "codex", "jcode"];
+const JCODE_ACTIVE_DIR = join(homedir(), ".jcode", "active_pids");
+const JCODE_WAIT_MS = 15000;
 const PROJECTS_DIR = join(homedir(), ".claude", "projects");
 const CACHE_DIR = join(homedir(), ".cache", "jev-start");
 
@@ -52,7 +54,8 @@ with their relevant exchanges as context.
 Options:
   --agent <name>  the agent to start: claude, codex or jcode (default claude, or the
                   JEV_START_AGENT environment variable). jcode takes no first prompt,
-                  so its first message goes to the clipboard to paste
+                  so jev-start sends it to the new session once it is live; it is also
+                  on the clipboard in case that fails
   --pick          choose one session to continue from a list of recent sessions in every
                   project; the newest ones from this folder come first
   --session <s>   continue one session: an id or id prefix, "last" for the newest session
@@ -663,11 +666,39 @@ function renderContext(chosen, continuing) {
   return parts.join("\n");
 }
 
+const sessionsOf = (dir) => (existsSync(dir) ? readdirSync(dir) : []);
+
+/**
+ * Send the first message to the jcode session this process started. jcode lists every live
+ * session in ~/.jcode/active_pids as session_<name>_<start in ms>_<id>. The new one is the
+ * entry that was not there before and started after the launch. Sending by session id means
+ * the message cannot land in another jcode window. Nothing is written to the terminal here:
+ * jcode owns it by now, and the message is on the clipboard if this fails.
+ */
+async function sendToNewJcodeSession(message, before, launchedAt) {
+  const deadline = Date.now() + JCODE_WAIT_MS;
+  while (Date.now() < deadline) {
+    await sleep(300);
+    const session = sessionsOf(JCODE_ACTIVE_DIR).find((name) => {
+      const started = Number(name.match(/^session_[a-z]+_(\d+)_/)?.[1]);
+      return !before.has(name) && started >= launchedAt - 1000;
+    });
+    if (!session) continue;
+    await sleep(500);   // let the client finish attaching before it gets input
+    try {
+      execFileSync("jcode", ["transcript", "-S", session, "--mode", "send", message], { stdio: "ignore" });
+    } catch {
+      // The clipboard holds the message.
+    }
+    return;
+  }
+}
+
 /**
  * How to start each agent with the context:
  * - claude appends the context file to its system prompt;
  * - codex takes it as developer instructions, a TOML string (JSON escapes are valid TOML);
- * - jcode has no first-prompt argument, so the first message goes to the clipboard.
+ * - jcode has no first-prompt argument, so the first message is sent once the session is live.
  */
 function launchPlan(agent, prompt, contextFile, context, extraArgs) {
   if (agent === "claude") {
@@ -678,10 +709,10 @@ function launchPlan(agent, prompt, contextFile, context, extraArgs) {
     const args = contextFile ? ["-c", `developer_instructions=${JSON.stringify(context)}`] : [];
     return { command: "codex", args: [...extraArgs, ...args, prompt] };
   }
-  const clipboard = contextFile
+  const firstMessage = contextFile
     ? `Read ${contextFile} before you start: it holds context from earlier sessions. Then: ${prompt}`
     : prompt;
-  return { command: "jcode", args: extraArgs, clipboard };
+  return { command: "jcode", args: extraArgs, firstMessage };
 }
 
 async function main() {
@@ -715,20 +746,24 @@ async function main() {
   if (options.dryRun) {
     const shown = plan.args.map((arg) => (arg.length > 200 ? `${arg.slice(0, 200)}…` : arg));
     console.log(`\n${plan.command} ${shown.map((arg) => JSON.stringify(arg)).join(" ")}`);
-    if (plan.clipboard) console.log(`clipboard: ${plan.clipboard}`);
+    if (plan.firstMessage) console.log(`first message: ${plan.firstMessage}`);
     return;
   }
 
-  if (plan.clipboard) {
-    execFileSync("pbcopy", { input: plan.clipboard });
-    process.stderr.write("jev-start: the first message is on the clipboard; paste it into jcode with Cmd+V.\n");
+  if (plan.firstMessage) {
+    execFileSync("pbcopy", { input: plan.firstMessage });
+    process.stderr.write("jev-start: jcode gets the first message once it is live. " +
+      "It is also on the clipboard; paste it with Cmd+V if it does not arrive.\n");
   }
 
   // A continued session starts in its own folder, so its paths and project settings apply.
   const folder = continuing ? sessions[0].session.cwd : "";
   const cwd = folder && existsSync(folder) ? folder : process.cwd();
   if (cwd !== process.cwd()) process.stderr.write(`jev-start: starting ${plan.command} in ${cwd}\n`);
+  const before = new Set(sessionsOf(JCODE_ACTIVE_DIR));
+  const launchedAt = Date.now();
   const child = spawn(plan.command, plan.args, { stdio: "inherit", cwd });
+  if (plan.firstMessage) sendToNewJcodeSession(plan.firstMessage, before, launchedAt);
   child.on("exit", (code, signal) => process.exit(signal ? 1 : code ?? 0));
 }
 
