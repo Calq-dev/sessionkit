@@ -7,7 +7,7 @@ All notable changes to sessionkit, called jev-start before 0.3.0. The format fol
 ### Added
 
 - **Usage limits in the status line on a subscription.** When Claude Code sends `rate_limits`,
-  the status line shows the 5-hour and 7-day limits instead of dollars, and an estimate of what
+  the status line shows the 5-hour and 7-day limits next to the dollars, and an estimate of what
   one call takes from the 5-hour limit at the current context. sessionkit learns that estimate
   locally from how the limit rises per call; it shows after 5 calls.
 

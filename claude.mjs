@@ -141,8 +141,8 @@ function limitsText(limits) {
 // ---------------------------------------------------------------- the status line
 
 /**
- * On a subscription (Claude Code sends rate_limits), the limits and what one call takes from them
- * matter, not dollars. On an API key, the dollars.
+ * On a subscription (Claude Code sends rate_limits), the limits and what one call takes from them,
+ * next to the API value of the tokens. On an API key, the dollars.
  */
 async function statuslineMain() {
   const input = await readInput();
@@ -156,9 +156,10 @@ async function statuslineMain() {
     const perCall = limitPerCall(state.context);
     const estimate = perCall === null ? "" : ` · ≈ +${perCall < 0.1 ? perCall.toFixed(2) : perCall.toFixed(1)}%/call`;
     const cache = state.warm
-      ? `${state.left < SOON_MS ? COLOR.yellow : COLOR.green}cache warm ${minutes(state.left)}${COLOR.reset}`
-      : `${COLOR.red}cache cold: next call rewrites ${tokens(state.context)}${COLOR.reset}`;
-    console.log(`${context} · ${limitsText(limits)}${estimate} · ${cache}`);
+      ? `${state.left < SOON_MS ? COLOR.yellow : COLOR.green}cache warm ${minutes(state.left)}${COLOR.reset} ` +
+        `${COLOR.dim}(cold: ${usd(state.coldCall)})${COLOR.reset}`
+      : `${COLOR.red}cache cold: next call rewrites ${tokens(state.context)} ≈ ${usd(state.coldCall)}${COLOR.reset}`;
+    console.log(`${context} · ${usd(state.perCall)}/call · ${limitsText(limits)}${estimate} · ${cache}`);
     return;
   }
 
