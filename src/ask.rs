@@ -25,6 +25,7 @@ const USAGE: &str = "Usage: sessionkit ask [options] <file> \"question\" [questi
 
 Asks Jev (TypeSafe) about a file instead of reading it. The file is sent to TypeSafe; the
 answer is a probability. Above 0.70 read it as yes, below 0.30 as no, in between read the file.
+Under every answer that is not a clear no stands the line that answers it.
 
 Question options, after the question they belong to:
   --options a,b,c    a choice: which one of these holds (\"none of these\" is added)
@@ -340,8 +341,22 @@ fn ask_file(options: &Options) -> Result<String> {
     let path = &options.paths[0];
     let text = read_file(path, options.include_sensitive)?;
     let (parts, short) = parts(&text);
-    let (best, tokens, model) = ask_parts(path, &parts, &options.questions, CONCURRENCY)?;
-    let mut lines: Vec<String> = options.questions.iter().zip(&best).map(|(q, b)| answer_line(q, b, &parts)).collect();
+    let (best, mut tokens, model) = ask_parts(path, &parts, &options.questions, CONCURRENCY)?;
+    // Where the answer stands, for every question that is not a clear no: a probability alone
+    // cannot answer "where" or "what", and a yes is only as good as the line it rests on.
+    let open: Vec<usize> = (0..best.len()).filter(|&i| best[i].value.is_some_and(|v| v >= ABSENT)).collect();
+    let (found, used) = evidence(path, &text, &open.iter().map(|&i| &options.questions[i]).collect::<Vec<_>>())?;
+    tokens += used;
+    let source: Vec<&str> = text.split('\n').collect();
+    let mut lines = Vec::new();
+    for (i, (question, best)) in options.questions.iter().zip(&best).enumerate() {
+        lines.push(answer_line(question, best, &parts));
+        let Some(k) = open.iter().position(|&o| o == i) else { continue };
+        lines.push(match found[k] {
+            Some((n, score)) if score >= ABSENT => format!("      line {n}  {}", js::head(js::trim(source.get(n - 1).unwrap_or(&"")), 160)),
+            _ => "      no single line answers it".into(),
+        });
+    }
     let spread = if parts.len() > 1 { format!(" · {} parts", parts.len()) } else { String::new() };
     let missed = if short > 0 { format!(" · {short} lines beyond part {MAX_PARTS} not read") } else { String::new() };
     lines.push(String::new());
@@ -424,6 +439,46 @@ fn ask_window(path: &str, question: &str, window: &Window) -> Result<(f64, Vec<(
     let probabilities = data["answers"]["line"]["probabilities"].as_object().into_iter().flatten()
         .filter_map(|(n, p)| Some((n.parse().ok()?, p.as_f64()?))).collect();
     Ok((exists, probabilities, tokens_of(&data)))
+}
+
+/// Per question, the line that answers it and how sure that is: per window one request with, per
+/// question, a choice of line and whether the window answers it at all. The best line is the one
+/// with the highest probability times that verdict, as in --find.
+fn evidence(path: &str, text: &str, questions: &[&Question]) -> Result<(Vec<Option<(usize, f64)>>, f64)> {
+    if questions.is_empty() {
+        return Ok((Vec::new(), 0.0));
+    }
+    let (windows, _, _) = windows(text);
+    let model = model();
+    let replies = js::pool(&windows, CONCURRENCY, |window, _| {
+        let lines: Map<String, Value> = window.lines.iter().map(|(n, text)| (n.to_string(), Value::from(text.as_str()))).collect();
+        let criteria: Map<String, Value> = lines.keys().map(|n| (n.clone(), Value::Null)).collect();
+        let mut asked = Map::new();
+        for (i, question) in questions.iter().enumerate() {
+            asked.insert(format!("line{i}"), json!({"type": "choice", "instructions": format!("{} Answer with the id of the line that answers it.", question.text), "criteria": criteria}));
+            asked.insert(format!("exists{i}"), json!({"type": "noul", "instructions": format!("Do the lines shown answer this at all: {}", question.text), "criteria": {
+                "true": "One of the lines shown answers it.",
+                "false": "None of them do; the answer is elsewhere or absent.",
+            }}));
+        }
+        post(&json!({"model": model, "state": {"path": path, "lines": lines}, "questions": asked}))
+    });
+    let replies: Vec<Value> = replies.into_iter().collect::<Result<_>>()?;
+    let tokens = replies.iter().map(tokens_of).sum();
+    let found = (0..questions.len()).map(|i| {
+        let mut top: Option<(usize, f64)> = None;
+        for data in &replies {
+            let exists = data["answers"][format!("exists{i}")]["noul"].as_f64().unwrap_or(0.0);
+            for (n, p) in data["answers"][format!("line{i}")]["probabilities"].as_object().into_iter().flatten() {
+                let (Ok(n), Some(p)) = (n.parse::<usize>(), p.as_f64()) else { continue };
+                if top.is_none_or(|(_, best)| p * exists > best) {
+                    top = Some((n, p * exists));
+                }
+            }
+        }
+        top
+    }).collect();
+    Ok((found, tokens))
 }
 
 fn find_in_file(options: &Options) -> Result<String> {

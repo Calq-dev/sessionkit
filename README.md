@@ -345,7 +345,9 @@ sessionkit ask --find src/config.rs "Where is the request timeout set?"
 
 ```text
 0.89  Does this file write to ~/.zshrc?
+      line 276  std::fs::write(path, &next_zshrc).map_err(|e| e.to_string())?;
 1.00  serde_json  (confidence 1.00)  Which serialization library does it use?
+      line 20  use serde_json::{Map, Value, json};
 0.03  Does it talk to a database?
 
 src/setup.rs · 13107 chars · 3866 tokens · $0.0002 · jev-1.13.0
@@ -353,7 +355,11 @@ src/setup.rs · 13107 chars · 3866 tokens · $0.0002 · jev-1.13.0
 
 Use it when an agent needs a fact about a file rather than its contents. The file goes to Jev
 and a probability comes back: above 0.70 read it as yes, below 0.30 as no, in between read the
-file. Up to ten questions about one file cost the same as one.
+file. Up to ten questions about one file cost the same as one. Under every answer of 0.30 or
+more stands the line that answers it, found as `--find` finds it, so an open question ("where
+are the files of this client?") gets its answer and a yes can be checked. That costs one more
+request per 200 non-empty lines, for all questions together; files beyond 2,400 non-empty lines
+get no line for what lies further on.
 
 - **Questions.** A plain question is yes/no. `--options a,b,c` after a question makes it a
   choice (`none of these` is added); `--yes` and `--no` say what counts, with the boundary cases.
