@@ -15,6 +15,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } fr
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { cacheState } from "./cache.mjs";
+import { handoffKey, leaveHandoff } from "./next.mjs";
 import { priceOf } from "./usage.mjs";
 
 const setting = (name) => process.env[`SESSIONKIT_${name}`];
@@ -28,6 +29,9 @@ const LIMIT_SAMPLE_WINDOW = 100;     // the newest warm calls the estimate uses
 const LIMIT_MIN_SAMPLES = 5;
 const LIMIT_FRESH_MS = 3 * 60 * 1000; // a delta over a longer gap mixes in other sessions' calls
 const SOON_MS = 10 * 60 * 1000;
+
+/** On a hook result: the Claude Code to stop once the result is out. JSON leaves symbol keys out. */
+const STOP_CLAUDE = Symbol("stop Claude Code");
 
 const COLOR = { green: "\x1b[32m", yellow: "\x1b[33m", red: "\x1b[31m", dim: "\x1b[2m", reset: "\x1b[0m" };
 
@@ -189,15 +193,30 @@ function sessionStart(input) {
 }
 
 /**
- * Before a message to a session whose cache has gone cold: when writing the context again costs
- * more than the limit, stop the message once. Sending the same session a message again goes
- * through, until the next call makes the cache warm and the check starts over.
+ * Before a message to a session whose cache has gone cold, when writing the context again costs
+ * more than the limit. When something in this terminal can open the next session (see next.mjs),
+ * close this one and continue the message in a fresh one. Else stop the message once: sending it
+ * again goes through, until the next call makes the cache warm and the check starts over.
  */
 function prompt(input) {
   if (!input.transcript_path || !existsSync(input.transcript_path)) return null;
   const state = cacheState(input.transcript_path);
   if (!state || state.warm || !(state.coldCall >= BLOCK_COLD_ABOVE_USD)) return null;
   const id = sessionId(input);
+
+  const claudePid = Number(process.env.CLAUDE_PID);
+  const key = claudePid && input.prompt ? handoffKey(claudePid) : null;
+  if (key) {
+    leaveHandoff(key, id, input.prompt);
+    return {
+      decision: "block",
+      reason: `sessionkit: the prompt cache of this session has expired. This message would write ` +
+        `${tokens(state.context)} tokens to the cache again: about ${usd(state.coldCall)}. Closing this ` +
+        `session; your message continues in a fresh one with only what matters.`,
+      [STOP_CLAUDE]: claudePid,
+    };
+  }
+
   const ack = join(ACK_DIR, id);
   const marker = `${state.lastCallTime}`;
   if (existsSync(ack) && readFileSync(ack, "utf8") === marker) return null;
@@ -222,7 +241,11 @@ async function hookMain(argv) {
   } catch {
     output = null;   // a hook must never stop Claude Code because this check failed
   }
-  if (output) console.log(JSON.stringify(output));
+  if (!output) return;
+  // Stop Claude Code only once it has the block: then the message never reaches the model.
+  process.stdout.write(`${JSON.stringify(output)}\n`, () => {
+    if (output[STOP_CLAUDE]) process.kill(output[STOP_CLAUDE], "SIGTERM");
+  });
 }
 
 export { hookMain, statuslineMain };

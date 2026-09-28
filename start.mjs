@@ -21,6 +21,7 @@ import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { createInterface } from "node:readline";
 import { execFileSync, spawn } from "node:child_process";
+import { runHandoff, takeHandoff } from "./next.mjs";
 
 const API = "https://api.typesafe.ai/v1/systemone";
 /** A setting from the environment, under its sessionkit name or its name from before the rename. */
@@ -1162,9 +1163,18 @@ async function startMain(argv) {
   if (childId) recordChain(childId, sessions.map(({ session }) => session.id), contextFile);
   const before = new Set(sessionsOf(JCODE_ACTIVE_DIR));
   const launchedAt = Date.now();
-  const child = spawn(plan.command, plan.args, { stdio: "inherit", cwd });
+  // SESSIONKIT_LAUNCHER tells sessionkit next inside the agent who can open the next session.
+  const env = { ...process.env, SESSIONKIT_LAUNCHER: String(process.pid) };
+  const child = spawn(plan.command, plan.args, { stdio: "inherit", cwd, env });
   if (plan.firstMessage) sendToNewJcodeSession(plan.firstMessage, before, launchedAt);
-  child.on("exit", (code, signal) => process.exit(signal ? 1 : code ?? 0));
+  child.on("exit", (code, signal) => {
+    const handoff = takeHandoff(child.pid);
+    if (!handoff) process.exit(signal ? 1 : code ?? 0);
+    runHandoff(handoff).catch((error) => {
+      process.stderr.write(`sessionkit: ${error.message}\n`);
+      process.exit(1);
+    });
+  });
 }
 
 export {

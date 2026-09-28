@@ -2,6 +2,7 @@
 // sessionkit — start, measure and analyse agent sessions.
 //
 //   sessionkit start    start Claude Code, Codex or jcode with what matters from earlier sessions
+//   sessionkit next     inside Claude Code: close a cold session and continue in a fresh one
 //   sessionkit usage    where the tokens and the money go in your Claude Code sessions
 //   sessionkit measure  measure whether start selects the right context
 //   sessionkit statusline, sessionkit hook   show in Claude Code what the prompt cache costs
@@ -13,6 +14,7 @@ const HELP = `sessionkit — start, measure and analyse agent sessions
 
 Usage:
   sessionkit start [options] "prompt"   start an agent with what matters from earlier sessions
+  ! sessionkit next "prompt"            inside Claude Code: close a cold session, continue fresh
   sessionkit usage [options]            where the tokens and the money go (local, free)
   sessionkit measure [options]          measure the selection of start (costs money)
   sessionkit statusline                 Claude Code status line: context, cost per call, cache
@@ -24,6 +26,7 @@ Run sessionkit <command> --help for the options of a command.`;
 
 const COMMANDS = {
   start: async (argv) => (await import("./start.mjs")).startMain(argv),
+  next: async (argv) => (await import("./next.mjs")).nextMain(argv),
   usage: async (argv) => (await import("./usage.mjs")).usageMain(argv),
   measure: async (argv) => (await import("./measure.mjs")).measureMain(argv),
   statusline: async () => (await import("./claude.mjs")).statuslineMain(),

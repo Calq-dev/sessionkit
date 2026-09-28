@@ -13,7 +13,8 @@ Start, measure and analyse your agent sessions.
 - **`sessionkit measure`** measures whether `start` selects the right context.
 - **`sessionkit statusline`** and **`sessionkit hook`** show inside Claude Code what the prompt
   cache costs: the context, the cost of each call, how long the cache stays warm, and a warning
-  before a cold call rewrites a large context.
+  before a cold call rewrites a large context. **`sessionkit next`** closes a cold session from
+  inside Claude Code and continues it in a fresh one.
 
 ## Install
 
@@ -94,17 +95,46 @@ apart.
   again costs more than $1, it says so before the first message, with Claude Code's own
   estimate (`estimated_cache_write_usd`).
 - **Before a message to a cold session** (`hook prompt`): when writing the context again costs
-  more than $2, it stops the message once and says what it would cost. Send the message again
-  to go ahead. A warning would come too late, because the call would already run.
+  more than $2, the message does not go out. A warning would come too late, because the call
+  would already run. Where it can (see below), the hook closes the session and continues your
+  message in a fresh one: `sessionkit start --session <this session> "your message"`. Elsewhere
+  it stops the message once and says what it would cost; send it again to go ahead.
+
+### Continue in a fresh session from inside Claude Code
+
+When a message goes to a cold, expensive session, the prompt hook closes it and continues the
+message in a fresh session, in the same terminal. You can also do this yourself, for instance
+on a warm session, with `sessionkit next` and Claude Code's `!` prefix:
+
+```text
+! sessionkit next "go on with the staging migration"
+```
+
+`next` closes this session and continues it in a fresh one:
+`sessionkit start --session <this session> "go on with the staging migration"`, in the same
+terminal. While the cache is still warm it refuses, because the next message there is cheap;
+add `--force` to start fresh anyway.
+
+A hook or a `!` command runs without the terminal, so it cannot open a new interactive session
+itself. Something that owns the terminal must do it once Claude Code has exited. The hook and
+`next` leave the prompt in `~/.cache/sessionkit/next/` and stop Claude Code. Then one of two
+owners opens the next session:
+
+- the `sessionkit start` that launched this Claude Code;
+- else, in zsh, a hook that `sessionkit setup` adds to `~/.zshrc`. Before the next shell prompt
+  it finds the prompt for this terminal. It only tests for a file, so your prompt stays fast.
+
+Without either, the hook stops the message once, and `next` prints the command to run.
 
 Nothing here reaches Claude's context: the status line, `systemMessage` and the block `reason`
 are shown to you only, so the checks cost no tokens.
 
-`sessionkit setup` writes all three into `~/.claude/settings.json`, with the path where
+`sessionkit setup` writes the status line and the hooks into `~/.claude/settings.json`, with the path where
 sessionkit is installed on your machine. A Claude Code plugin can ship hooks but not a status
 line, which is why this is a command and not a plugin. It makes a backup first, leaves your
 other settings and hooks alone, and can run again safely. It asks before it replaces a status
-line that is not sessionkit's (`--force` skips the question). `sessionkit setup --remove` takes
+line that is not sessionkit's (`--force` skips the question). In zsh it also adds the hook for
+`sessionkit next` to `~/.zshrc`, between two marker lines. `sessionkit setup --remove` takes
 everything out again.
 
 Set the limits with `SESSIONKIT_WARN_RESUME_ABOVE` (default 1) and `SESSIONKIT_BLOCK_COLD_ABOVE`

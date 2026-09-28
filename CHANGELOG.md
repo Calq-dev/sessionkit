@@ -2,6 +2,24 @@
 
 All notable changes to sessionkit, called jev-start before 0.3.0. The format follows [Keep a Changelog](https://keepachangelog.com).
 
+## [0.7.0] - 2026-09-27
+
+### Added
+
+- **`sessionkit next`**: send `! sessionkit next "prompt"` inside Claude Code to close a session
+  whose cache has gone cold and continue it in a fresh one, in the same terminal. It refuses
+  while the cache is warm (`--force` overrides). The `sessionkit start` that launched the
+  session opens the next one; in other sessions, a zsh hook does.
+- **`sessionkit setup` adds the zsh hook** for `sessionkit next` to `~/.zshrc`, between marker
+  lines; `--remove` takes it out.
+
+### Changed
+
+- **A message to a cold, expensive session continues in a fresh one.** The prompt hook closes
+  the session and runs `sessionkit start --session <this session> "your message"` in the same
+  terminal, where `sessionkit start` or the zsh hook can open it. Elsewhere it still stops the
+  message once.
+
 ## [0.6.0] - 2026-09-27
 
 ### Added
