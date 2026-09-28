@@ -1,0 +1,6 @@
+{
+  "name": "sessionkit",
+  "version": "__VERSION__",
+  "description": "Compaction without a summary: Jev decides which tool outputs are still needed, all text stays verbatim.",
+  "license": "MIT"
+}

@@ -3,7 +3,7 @@
 // relevant files with verbatim source, for a coding agent to read.
 
 mod evaluator;
-mod fs;
+pub mod fs;
 mod python;
 mod render;
 mod requests;

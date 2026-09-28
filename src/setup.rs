@@ -8,8 +8,10 @@
 //
 // The zsh hook sits between two marker lines in ~/.zshrc, so setup can replace or remove it.
 //
-// It also installs the skill that tells Claude Code when and how to use sessionkit grep, in the
-// skills folder next to the settings file.
+// It also installs the skill that tells Claude Code when and how to use sessionkit grep and
+// sessionkit ask, in the skills folder next to the settings file, and the plugin through which
+// /compact and auto-compaction go to sessionkit compact. That plugin is a function hook, an
+// early-access part of Claude Code, so setup turns function hooks on in the settings.
 
 use crate::Result;
 use crate::js;
@@ -20,20 +22,32 @@ use std::path::{Path, PathBuf};
 
 const USAGE: &str = "Usage: sessionkit setup [options]
 
-Adds the sessionkit status line and hooks to Claude Code's user settings, the skill for
-sessionkit grep to ~/.claude/skills, and on zsh the hook that lets sessionkit next open the next
-session to ~/.zshrc.
+Adds the sessionkit status line and hooks to Claude Code's user settings, the sessionkit skill
+to ~/.claude/skills, the plugin for compaction without a summary, and on zsh the hook that lets
+sessionkit next open the next session to ~/.zshrc.
 
 Options:
-  --remove           take the sessionkit status line, hooks and skill out again
+  --remove           take the sessionkit status line, hooks, skill and plugin out again
   --force            replace a status line that is not sessionkit's without asking
   --settings <file>  another settings file (default ~/.claude/settings.json)
   --zshrc <file>     another zsh startup file (default ~/.zshrc)
   --dry-run          print the result instead of writing it
   -h, --help         show this help";
 
-const SKILL: &str = include_str!("grep/SKILL.md");
-const SKILL_NAME: &str = "sessionkit-grep";
+const SKILL: &str = include_str!("SKILL.md");
+const SKILL_NAME: &str = "sessionkit";
+const OLD_SKILL_NAME: &str = "sessionkit-grep";
+
+const PLUGIN_FILES: [(&str, &str); 4] = [
+    (".claude-plugin/plugin.json", include_str!("../plugin/.claude-plugin/plugin.json")),
+    (".claude-plugin/marketplace.json", include_str!("../plugin/.claude-plugin/marketplace.json")),
+    ("hooks/hooks.json", include_str!("../plugin/hooks/hooks.json")),
+    ("hooks/compact.js", include_str!("../plugin/hooks/compact.js")),
+];
+const PLUGIN_FOLDER: &str = "sessionkit-plugin";
+const PLUGIN_ID: &str = "sessionkit@sessionkit";
+const MARKETPLACE: &str = "sessionkit";
+const FUNCTION_HOOKS: &str = "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS";
 
 const ZSH_START: &str = "# >>> sessionkit >>>";
 const ZSH_END: &str = "# <<< sessionkit <<<";
@@ -90,9 +104,9 @@ fn parse_arguments(argv: &[String]) -> Options {
     options
 }
 
-/// How Claude Code should call sessionkit: through the command it was started as when that is a
-/// link named sessionkit (Homebrew's, which survives an update); else the program itself.
-fn sessionkit_command() -> String {
+/// Where sessionkit is: the command it was started as when that is a link named sessionkit
+/// (Homebrew's, which survives an update); else the program itself.
+fn sessionkit_path() -> String {
     let invoked = std::env::args().next().unwrap_or_default();
     let path = if invoked.contains('/') {
         std::path::absolute(&invoked).unwrap_or_else(|_| PathBuf::from(&invoked))
@@ -105,7 +119,12 @@ fn sessionkit_command() -> String {
     } else {
         std::env::current_exe().and_then(std::fs::canonicalize).unwrap_or(path)
     };
-    let text = path.to_string_lossy().into_owned();
+    path.to_string_lossy().into_owned()
+}
+
+/// How Claude Code should call sessionkit from a command line.
+fn sessionkit_command() -> String {
+    let text = sessionkit_path();
     if text.chars().any(char::is_whitespace) { format!("\"{text}\"") } else { text }
 }
 
@@ -183,6 +202,9 @@ pub fn setup_main(argv: &[String]) -> Result<()> {
             messages.push("removed the status line".into());
         }
         messages.push("removed the hooks".into());
+        if settings.get("env").and_then(|env| env.get(FUNCTION_HOOKS)).is_some() {
+            messages.push(format!("kept {FUNCTION_HOOKS}; other plugins may use function hooks too"));
+        }
     } else {
         let replace = !js::truthy(settings.get("statusLine")) || status_line_is_ours || options.force
             || ask(&format!("There is a status line already:\n  {current}\nReplace it with sessionkit's? [y/N] "));
@@ -202,6 +224,12 @@ pub fn setup_main(argv: &[String]) -> Result<()> {
         add("UserPromptSubmit", json!({"hooks": [{"type": "command", "command": format!("{command} hook prompt"), "timeout": 10}]}));
         messages.push("hook on --resume: warns when the expired cache is expensive to write again".into());
         messages.push("hook on each message: a message to a cold, expensive session continues in a fresh one".into());
+        let mut env = next.get("env").and_then(Value::as_object).cloned().unwrap_or_default();
+        if env.get(FUNCTION_HOOKS).and_then(Value::as_str) != Some("1") {
+            env.insert(FUNCTION_HOOKS.into(), "1".into());
+            next.insert("env".into(), Value::Object(env));
+            messages.push(format!("{FUNCTION_HOOKS}=1: function hooks, early access, for compaction without a summary"));
+        }
     }
     if hooks.is_empty() {
         next.shift_remove("hooks");
@@ -255,20 +283,34 @@ pub fn setup_main(argv: &[String]) -> Result<()> {
         }
         _ => {}
     }
-    install_skill(&options)
+    install_skill(&options)?;
+    install_plugin(&options, &settings)
 }
 
-/// The grep skill, in the skills folder beside the settings file. Only a skill with our name is
-/// replaced or removed.
+/// Remove a skill folder that sessionkit wrote: only a SKILL.md with that name in it.
+fn remove_skill(folder: &Path, name: &str) -> Result<bool> {
+    let file = folder.join("SKILL.md");
+    if !std::fs::read_to_string(&file).is_ok_and(|text| text.contains(&format!("name: {name}\n"))) {
+        return Ok(false);
+    }
+    std::fs::remove_file(&file).map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_dir(folder);
+    Ok(true)
+}
+
+/// The sessionkit skill, in the skills folder beside the settings file. Only a skill with our
+/// name is replaced or removed; the grep skill of earlier versions goes.
 fn install_skill(options: &Options) -> Result<()> {
-    let folder = options.settings.parent().unwrap_or(Path::new(".")).join("skills").join(SKILL_NAME);
+    let skills = options.settings.parent().unwrap_or(Path::new(".")).join("skills");
+    if remove_skill(&skills.join(OLD_SKILL_NAME), OLD_SKILL_NAME)? {
+        println!("sessionkit setup: {}\n  - removed the skill of earlier versions; the sessionkit skill replaces it", skills.join(OLD_SKILL_NAME).display());
+    }
+    let folder = skills.join(SKILL_NAME);
     let file = folder.join("SKILL.md");
     let current = std::fs::read_to_string(&file).ok();
     if options.remove {
-        if current.is_some_and(|text| text.contains(&format!("name: {SKILL_NAME}\n"))) {
-            std::fs::remove_file(&file).map_err(|e| e.to_string())?;
-            let _ = std::fs::remove_dir(&folder);
-            println!("sessionkit setup: {}\n  - removed the skill for sessionkit grep", file.display());
+        if remove_skill(&folder, SKILL_NAME)? {
+            println!("sessionkit setup: {}\n  - removed the sessionkit skill", file.display());
         }
         return Ok(());
     }
@@ -277,6 +319,60 @@ fn install_skill(options: &Options) -> Result<()> {
     }
     std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
     std::fs::write(&file, SKILL).map_err(|e| e.to_string())?;
-    println!("sessionkit setup: {}\n  - skill: Claude Code uses sessionkit grep to find code by asking what it does", file.display());
+    println!("sessionkit setup: {}\n  - skill: Claude Code uses sessionkit grep and sessionkit ask instead of reading files one by one", file.display());
+    Ok(())
+}
+
+/// Run the claude command; its own message when it fails.
+fn claude(args: &[&str]) -> std::result::Result<(), String> {
+    let output = std::process::Command::new("claude").args(args).stdin(std::process::Stdio::null()).output()
+        .map_err(|error| format!("claude {}: {error}", args.join(" ")))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let text = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    Err(format!("claude {}: {}", args.join(" "), js::trim(&text)))
+}
+
+/// The compaction plugin: written beside the settings file with the path of sessionkit in it,
+/// then installed from there as a local marketplace. Claude Code manages its plugins itself,
+/// so setup asks the claude command to do it, and only for the real settings file.
+fn install_plugin(options: &Options, settings: &Value) -> Result<()> {
+    let folder = options.settings.parent().unwrap_or(Path::new(".")).join(PLUGIN_FOLDER);
+    let managed = options.settings == home().join(".claude").join("settings.json");
+    if options.remove {
+        if managed {
+            let _ = claude(&["plugin", "uninstall", PLUGIN_ID]);
+            let _ = claude(&["plugin", "marketplace", "remove", MARKETPLACE]);
+        }
+        if folder.exists() {
+            std::fs::remove_dir_all(&folder).map_err(|e| e.to_string())?;
+            println!("sessionkit setup: {}\n  - removed the compaction plugin", folder.display());
+        }
+        return Ok(());
+    }
+    for (path, text) in PLUGIN_FILES {
+        let text = text.replace("__VERSION__", env!("CARGO_PKG_VERSION")).replace("\"__SESSIONKIT__\"", &js::quote(&sessionkit_path()));
+        let file = folder.join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).map_err(|e| e.to_string())?;
+        std::fs::write(&file, text).map_err(|e| e.to_string())?;
+    }
+    let installed = if !managed {
+        Err(format!("another settings file; install it with: claude plugin marketplace add {} && claude plugin install {PLUGIN_ID}", folder.display()))
+    } else {
+        // Out and in again: a plugin keeps its cached copy while its version stays the same.
+        let _ = claude(&["plugin", "uninstall", PLUGIN_ID]);
+        let _ = claude(&["plugin", "marketplace", "remove", MARKETPLACE]);
+        claude(&["plugin", "marketplace", "add", &folder.to_string_lossy()]).and_then(|_| claude(&["plugin", "install", PLUGIN_ID, "--scope", "user"]))
+    };
+    match installed {
+        Ok(()) => println!("sessionkit setup: {}\n  - plugin: /compact and auto-compaction go through sessionkit compact, without a summary", folder.display()),
+        Err(error) => println!("sessionkit setup: {}\n  - plugin written, not installed: {error}", folder.display()),
+    }
+    let fast_jev = settings.get("enabledPlugins").and_then(Value::as_object).into_iter().flatten()
+        .any(|(id, on)| id.starts_with("fast-jev-compaction@") && on.as_bool() == Some(true));
+    if fast_jev {
+        println!("  - fast-jev-compaction is enabled too; it does the same job. Turn one off: claude plugin disable fast-jev-compaction@fast-jev-compaction");
+    }
     Ok(())
 }

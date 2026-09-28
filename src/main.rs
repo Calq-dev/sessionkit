@@ -6,11 +6,15 @@
 //   sessionkit measure  measure whether start selects the right context
 //   sessionkit statusline, sessionkit hook   show in Claude Code what the prompt cache costs
 //   sessionkit setup    put the status line and hooks in Claude Code's settings
+//   sessionkit grep, sessionkit ask   find code, or a fact about a file, by asking Jev
+//   sessionkit compact  compact a conversation without a summary, from Claude Code's /compact
 //
 // A prompt without a command means start.
 
+mod ask;
 mod cache;
 mod claude;
+mod compact;
 mod grep;
 mod js;
 mod measure;
@@ -30,6 +34,8 @@ Usage:
   sessionkit hook session-start|prompt  Claude Code hooks: warn on a costly resume or cold message
   sessionkit setup [--remove]           install the status line and hooks in Claude Code
   sessionkit grep \"question\" [root]     find code by asking what it does (Jev, costs money)
+  sessionkit ask <file> \"question\"      ask about a file instead of reading it (Jev, costs money)
+  sessionkit compact <session>          what a compaction without summary would keep (Jev)
   sessionkit \"prompt\"                   the same as start
 
 Run sessionkit <command> --help for the options of a command.";
@@ -56,6 +62,8 @@ fn main() {
         "hook" => claude::hook_main(rest),
         "setup" => setup::setup_main(rest),
         "grep" => grep::grep_main(rest),
+        "ask" => ask::ask_main(rest),
+        "compact" => compact::compact_main(rest),
         #[cfg(feature = "test-api")]
         "grep-inspect" => grep::inspect_main(rest),
         #[cfg(feature = "test-api")]

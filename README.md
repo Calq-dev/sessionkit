@@ -13,6 +13,13 @@ Start, measure and analyse your agent sessions.
 - **`sessionkit grep`** finds code by asking what it does: Jev judges folders, files and
   declarations for a question, and the answer lists the relevant files with verbatim source,
   for a coding agent to read. A port of [jevgrep](https://github.com/dzhng/jevgrep).
+- **`sessionkit ask`** answers a question about a file without reading it into the agent's
+  context: up to ten facts about one file, one question over many files, or the line that
+  answers it. A port of the ask-jev plugin.
+- **`sessionkit compact`** compacts a Claude Code conversation without a summary, from
+  `/compact` and auto-compaction: Jev decides per tool call whether it and its output are still
+  needed, and all text stays verbatim. A port of
+  [fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction).
 - **`sessionkit measure`** measures whether `start` selects the right context.
 - **`sessionkit statusline`** and **`sessionkit hook`** show inside Claude Code what the prompt
   cache costs: the context, the cost of each call, how long the cache stays warm, and a warning
@@ -291,8 +298,8 @@ what the question asks. The output starts with the relevant files and their role
 (implementation, caller, test, fixture, helper), then verbatim source with line numbers, then
 the declarations as `name@start-end`. It is evidence for the agent, not a generated answer.
 
-`sessionkit setup` installs a skill in `~/.claude/skills/sessionkit-grep/`, so Claude Code knows
-when and how to use it.
+`sessionkit setup` installs the skill `~/.claude/skills/sessionkit/`, so Claude Code knows when
+and how to use `grep` and `ask`.
 
 - **What leaves your machine.** Eligible source goes to TypeSafe. Hidden files, dependency and
   build folders, files that `.gitignore` or `.ignore` exclude, sensitive names (`.env`, keys)
@@ -325,6 +332,93 @@ that only CPython's compiler reports (such as `del 1`) still parse here.
 Other differences: the cache is its own (answers computed on jevgrep's parsers are never
 reused), the key is sessionkit's TypeSafe key, and a refused key says so instead of "Command
 failed". jevgrep is MIT-licensed; see [licenses/jevgrep-MIT.txt](licenses/jevgrep-MIT.txt).
+
+## sessionkit ask
+
+```sh
+sessionkit ask src/upload.ts "Does this file retry a failed upload?" \
+  "Which HTTP client does it use?" --options fetch,axios,got \
+  "Does it talk to a real database?" --no "Mocks and fixtures do not count."
+sessionkit ask --filter "Does this file make a network call to an external service?" src/
+sessionkit ask --find src/config.rs "Where is the request timeout set?"
+```
+
+```text
+0.89  Does this file write to ~/.zshrc?
+1.00  serde_json  (confidence 1.00)  Which serialization library does it use?
+0.03  Does it talk to a database?
+
+src/setup.rs · 13107 chars · 3866 tokens · $0.0002 · jev-1.13.0
+```
+
+Use it when an agent needs a fact about a file rather than its contents. The file goes to Jev
+and a probability comes back: above 0.70 read it as yes, below 0.30 as no, in between read the
+file. Up to ten questions about one file cost the same as one.
+
+- **Questions.** A plain question is yes/no. `--options a,b,c` after a question makes it a
+  choice (`none of these` is added); `--yes` and `--no` say what counts, with the boundary cases.
+- **`--filter`** asks one yes/no question about every file, highest first. A folder is searched
+  with the rules of `grep`: no hidden, ignored or dependency files, at most 200 files
+  (`--max-files`).
+- **`--find`** returns the likeliest lines and first says whether the file answers the question
+  at all: "Not in this file" below 0.30, "Partly answered" below 0.70.
+- **What leaves your machine.** The file, cut into parts of 60,000 characters with 20 lines of
+  overlap, at most eight parts. A file with a sensitive name or a private key in it stays here
+  unless you pass `--include-sensitive`; binary files are never sent.
+
+Compared with the ask-jev plugin it asks the same questions in the same shape, runs from the
+command line instead of an MCP server, needs no Node.js, uses sessionkit's key, keeps sensitive
+files back, searches folders for `--filter`, and prints the cost.
+
+## sessionkit compact
+
+Claude Code compacts a conversation by asking a model to summarize it. A summary is lossy: a
+path, an exact error or a constraint can disappear although it matters later. `sessionkit
+compact` rewrites nothing. It shows Jev the whole conversation, with every tool output replaced
+by a short note, and asks per tool call two questions: should the call stay, and should its
+full output stay verbatim. An output it lets go is cut to its first 300 characters and a note;
+a call it lets go is dropped together with its output. The first message and the newest six
+are never touched, and all text of you and Claude stays as it was. The method, the wording of
+the questions and the limits are those of fast-jev-compaction 0.3.0.
+
+`sessionkit setup` installs it as a Claude Code plugin with one function hook on
+`session.compact`: `/compact`, auto-compaction and Claude Code's precomputed compaction all go
+through `sessionkit compact --hook`. When that fails, or frees less than a quarter of the
+characters, Claude Code writes its own summary as before. A toast says which happened.
+
+```sh
+sessionkit compact last               # what a compaction now would keep; changes nothing
+sessionkit compact 9d17b657 --verbose # per tool call: the decision and both probabilities
+sessionkit compact --measure 30       # measure the questions on real sessions (costs money)
+```
+
+Function hooks are an early-access part of Claude Code: they need
+`CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`, which `setup` puts in the settings, and their interface
+can change between releases. Tested with Claude Code 2.1.284: a `/compact` on a session of
+89,812 tokens left 14,770 in 385 ms, with the conversation verbatim and three of four file
+reads gone. If fast-jev-compaction is installed too, turn one of them off; `setup` says so.
+
+**Checked against fast-jev-compaction.** Against a stand-in for Jev with fixed answers, on 18
+real transcripts, it sent the same requests byte for byte and kept the same messages, including
+the transcripts where the state had to shrink.
+
+**Measured: the questions do not yet tell what is still needed.** `--measure` cuts real
+sessions at a prompt and labels the file reads before the cut with what happened after it:
+*needed* when the file was edited without being read again, *unused* when it never came back.
+Run of 28 September 2026 (7 cuts in 3 sessions, 30 labelled reads, $0.011):
+
+| Label | Reads | Median keep call | Median keep output | Kept at 0.5 |
+| --- | --- | --- | --- | --- |
+| Needed | 11 | 0.26 | 0.12 | 0 |
+| Unused | 19 | 0.31 | 0.15 | 0 |
+
+Jev puts almost every call between 0.1 and 0.3, so at the threshold of 0.5 nearly every tool
+call outside the newest six messages goes; on real sessions 83 to 87% of the characters. Within
+a cut the needed reads ranked below the unused ones. A rewording that names the goal and the
+tool input in the question moved the call question to 0.67 (5 of 11 needed kept, 7 of 19 unused)
+and left the output question at chance; it is not in use. In practice, then, this is "keep all
+text, drop old tool output", which Claude can re-run. The sample is small, and three sessions
+with both labels out of a thousand says the labels need work too.
 
 ## sessionkit measure
 
@@ -370,6 +464,10 @@ and shared terms scored at chance.
 ## Limits
 
 - The measurement above is small: 8 cuts and 24 routing items from one person's sessions.
+- `sessionkit compact` depends on function hooks, an early-access part of Claude Code, and its
+  questions do not yet separate needed from unneeded tool output (see above).
+- After a compaction by `sessionkit compact`, the transcript holds the kept messages twice:
+  before the boundary and after it. `start` and `usage` skip the copies.
 - Jev sees later turns only in short form, so an open item that a later turn finished can
   still show as open.
 - Session chains only cover Claude Code sessions that sessionkit started. A session you
