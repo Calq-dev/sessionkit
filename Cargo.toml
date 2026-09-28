@@ -1,0 +1,28 @@
+[package]
+name = "sessionkit"
+version = "0.8.0"
+edition = "2024"
+description = "Start, measure and analyse agent sessions: resume with only the context that matters, see where tokens and money go."
+publish = false
+
+[[bin]]
+name = "sessionkit"
+path = "src/main.rs"
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+indexmap = "2"
+libc = "0.2"
+regex = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
+ureq = "3"
+uuid = { version = "1", features = ["v4"] }
+
+[features]
+# Take the System One endpoint from SESSIONKIT_API; for comparing requests in tests only.
+test-api = []
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
