@@ -18,10 +18,16 @@ require "utils/github/api"
 
 # Downloads a release asset of a private GitHub repository through the API.
 class GitHubPrivateReleaseDownloadStrategy < CurlDownloadStrategy
+  # The install step runs in a sandbox that cannot reach the gh login; it needs no token either,
+  # because the download is done by then.
   def initialize(url, name, version, **meta)
     token = GitHub::API.credentials
-    odie "sessionkit is private: run gh auth login, or set HOMEBREW_GITHUB_API_TOKEN." if token.blank?
-    meta[:headers] = ["Authorization: token #{token}", "Accept: application/octet-stream"]
+    meta[:headers] = ["Authorization: token #{token}", "Accept: application/octet-stream"] if token.present?
+    super
+  end
+
+  def fetch(timeout: nil)
+    odie "sessionkit is private: run gh auth login, or set HOMEBREW_GITHUB_API_TOKEN." if meta[:headers].blank?
     super
   end
 end
