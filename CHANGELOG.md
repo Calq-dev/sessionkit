@@ -6,13 +6,31 @@ All notable changes to sessionkit, called jev-start before 0.3.0. The format fol
 
 ### Added
 
+- **`sessionkit ask`** answers questions about a file without reading it into context: up to ten
+  facts about one file (yes/no, or a choice with `--options`), one question over many files or
+  folders (`--filter`), or the line that answers it (`--find`). A port of the ask-jev plugin;
+  files with a sensitive name or a private key stay on the machine.
+- **`sessionkit compact`** compacts a Claude Code conversation without a summary: Jev decides
+  per tool call whether it and its output are still needed, all text stays verbatim. `setup`
+  installs a plugin with a function hook, so `/compact` and auto-compaction use it, and turns
+  function hooks on. A port of fast-jev-compaction (MIT) that sends the same requests.
+  `sessionkit compact <session>` shows what it would keep; `--measure` measures the questions.
+- **One skill, `sessionkit`**, for `grep` and `ask`, replaces the `sessionkit-grep` skill;
+  `setup` removes the old one.
+
 - **`sessionkit grep "question" [root]`** finds code by asking what it does: the relevant files
   with verbatim source and declaration locations, for a coding agent. A port of jevgrep
   (MIT) that asks Jev the same questions; compared with `jg` 0.4.2 it sends the same requests
   and prints the same output, about four times faster. Python is parsed with tree-sitter,
   TypeScript and JavaScript with oxc.
-- **`sessionkit setup` installs the skill** for `sessionkit grep` in `~/.claude/skills`;
-  `--remove` takes it out.
+- **`sessionkit setup` installs the skill** in `~/.claude/skills`; `--remove` takes it out.
+
+### Changed
+
+- Retries to TypeSafe in `start` and `measure` wait with jitter, at most five seconds, and
+  follow the server's `Retry-After`, as TypeSafe's SDKs do.
+- `start` skips the copies of messages that a compaction without a summary writes after its
+  boundary.
 
 ### Fixed
 

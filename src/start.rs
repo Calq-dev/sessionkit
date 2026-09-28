@@ -70,7 +70,7 @@ fn setting(name: &str) -> Option<String> {
     std::env::var(format!("SESSIONKIT_{name}")).or_else(|_| std::env::var(format!("JEV_START_{name}"))).ok()
 }
 
-fn model() -> String {
+pub fn model() -> String {
     setting("MODEL").filter(|model| !model.is_empty()).unwrap_or_else(|| "jev-latest".into())
 }
 
@@ -265,7 +265,7 @@ pub fn typesafe_key() -> Result<String> {
 // ---------------------------------------------------------------- estimating
 
 pub const CHARS_PER_TOKEN: f64 = 3.5; // measured 3.76 on a real run; lower, so the estimate stays an upper bound
-const PRICE_PER_MILLION_TOKENS: f64 = 0.042;
+pub const PRICE_PER_MILLION_TOKENS: f64 = 0.042;
 
 /// While estimating, nothing goes to TypeSafe: every request is counted and gets a neutral
 /// answer (0.5 for a Noul, an even spread for a Choice). Branches that depend on a score
@@ -322,8 +322,23 @@ static AGENT: LazyLock<ureq::Agent> = LazyLock::new(|| {
     ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(30))).http_status_as_error(false).build().into()
 });
 
-/// One System One call, with the SDKs' default retry policy: two retries with backoff.
-fn post(body: &Value) -> Result<Value> {
+/// The wait before a retry: from half a second doubling to five, less up to a quarter at random,
+/// so parallel requests that failed together do not come back together.
+fn backoff(attempt: u32) -> Duration {
+    let base = (500 * 2u64.pow(attempt)).min(5000) as f64;
+    let jitter = (uuid::Uuid::new_v4().as_u128() % 1000) as f64 / 1000.0;
+    Duration::from_millis((base * (1.0 - 0.25 * jitter)) as u64)
+}
+
+/// The wait the server asks for in Retry-After (seconds), when it names one of at most a minute.
+fn retry_after(response: &ureq::http::Response<ureq::Body>) -> Option<Duration> {
+    let seconds = js::parse_number(response.headers().get("retry-after").and_then(|value| value.to_str().ok()));
+    (seconds.is_finite() && seconds > 0.0 && seconds <= 60.0).then(|| Duration::from_millis((seconds * 1000.0) as u64))
+}
+
+/// One System One call, with the default retry policy of TypeSafe's SDKs: two retries with
+/// backoff and jitter, or the server's Retry-After when it sends one.
+pub fn post(body: &Value) -> Result<Value> {
     let text = js::stringify(body);
     {
         let mut estimate = ESTIMATE.lock().unwrap();
@@ -334,7 +349,6 @@ fn post(body: &Value) -> Result<Value> {
             return Ok(neutral_response(body, size));
         }
     }
-    let backoff = |attempt: u32| std::thread::sleep(Duration::from_millis(500 * 2u64.pow(attempt)));
     let mut attempt = 0;
     loop {
         let (api_key, source) = key()?;
@@ -344,7 +358,7 @@ fn post(body: &Value) -> Result<Value> {
             Ok(response) => response,
             Err(error) => {
                 if attempt < 2 {
-                    backoff(attempt);
+                    std::thread::sleep(backoff(attempt));
                     attempt += 1;
                     continue;
                 }
@@ -352,6 +366,7 @@ fn post(body: &Value) -> Result<Value> {
             }
         };
         let status = response.status().as_u16();
+        let wait = retry_after(&response);
         let reply = response.body_mut().read_to_string().map_err(|error| error.to_string())?;
         if (200..300).contains(&status) {
             return js::parse(&reply).ok_or_else(|| format!("TypeSafe {status}: not JSON: {}", js::head(&reply, 200)));
@@ -363,7 +378,7 @@ fn post(body: &Value) -> Result<Value> {
             continue;
         }
         if attempt < 2 && retryable(status) {
-            backoff(attempt);
+            std::thread::sleep(wait.unwrap_or_else(|| backoff(attempt)));
             attempt += 1;
             continue;
         }
@@ -776,11 +791,19 @@ fn parse_session(path: &Path) -> Result<Session> {
         summary: None, exchanges: Vec::new(), changed_files: IndexMap::new(), commands: Vec::new(),
     };
     let mut current: Option<usize> = None;
+    // A compaction without a summary (sessionkit compact) writes the kept messages again after
+    // the boundary, with their own timestamps; they are copies of what was read already.
+    let mut boundary = String::new();
     for line in std::io::BufReader::new(file).split(b'\n') {
         let Ok(line) = line else { break };
         let line = String::from_utf8_lossy(&line);
         let Some(entry) = js::parse(line.strip_suffix('\r').unwrap_or(&line)) else { continue };
         let kind = js::str_of(&entry, "type");
+        if kind == "system" && js::str_of(&entry, "subtype") == "compact_boundary" && !js::truthy(entry.get("isSidechain")) {
+            boundary = js::str_of(&entry, "timestamp").to_string();
+        } else if !boundary.is_empty() && ["user", "assistant"].contains(&kind) && js::str_of(&entry, "timestamp") < boundary.as_str() {
+            continue;
+        }
         if kind == "ai-title" && js::truthy(entry.get("aiTitle")) {
             session.title = js::str_of(&entry, "aiTitle").to_string();
         }

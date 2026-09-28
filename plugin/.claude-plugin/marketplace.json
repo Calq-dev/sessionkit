@@ -1,0 +1,12 @@
+{
+  "name": "sessionkit",
+  "owner": { "name": "Calq-dev" },
+  "plugins": [
+    {
+      "name": "sessionkit",
+      "source": "./",
+      "description": "Compaction without a summary, through sessionkit compact.",
+      "version": "__VERSION__"
+    }
+  ]
+}
