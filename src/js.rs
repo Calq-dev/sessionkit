@@ -28,6 +28,27 @@ pub fn head(text: &str, max: usize) -> &str {
     text
 }
 
+/// JavaScript's .slice(start, end) in UTF-16 units. A surrogate pair that a cut would split is
+/// left out whole.
+pub fn slice(text: &str, start: usize, end: usize) -> &str {
+    let from = head(text, start).len();
+    let to = head(text, end.max(start)).len();
+    &text[from..to]
+}
+
+/// String.prototype.localeCompare with the default (root) collation, as V8 compares.
+pub fn locale_compare(a: &str, b: &str) -> std::cmp::Ordering {
+    static COLLATOR: std::sync::LazyLock<icu_collator::CollatorBorrowed<'static>> =
+        std::sync::LazyLock::new(|| icu_collator::CollatorBorrowed::try_new(Default::default(), Default::default()).expect("baked collation data"));
+    COLLATOR.compare(a, b)
+}
+
+/// The SHA-256 of some bytes, as lowercase hex.
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 /// Cut a text to `max` units and mark the cut.
 pub fn clip(text: &str, max: usize) -> String {
     if len(text) > max { format!("{} […]", head(text, max)) } else { text.to_string() }

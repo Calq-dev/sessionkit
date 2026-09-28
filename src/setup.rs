@@ -7,6 +7,9 @@
 // replaces its own entries instead of adding them twice. --remove takes them out again.
 //
 // The zsh hook sits between two marker lines in ~/.zshrc, so setup can replace or remove it.
+//
+// It also installs the skill that tells Claude Code when and how to use sessionkit grep, in the
+// skills folder next to the settings file.
 
 use crate::Result;
 use crate::js;
@@ -17,16 +20,20 @@ use std::path::{Path, PathBuf};
 
 const USAGE: &str = "Usage: sessionkit setup [options]
 
-Adds the sessionkit status line and hooks to Claude Code's user settings, and on zsh the hook
-that lets sessionkit next open the next session to ~/.zshrc.
+Adds the sessionkit status line and hooks to Claude Code's user settings, the skill for
+sessionkit grep to ~/.claude/skills, and on zsh the hook that lets sessionkit next open the next
+session to ~/.zshrc.
 
 Options:
-  --remove           take the sessionkit status line and hooks out again
+  --remove           take the sessionkit status line, hooks and skill out again
   --force            replace a status line that is not sessionkit's without asking
   --settings <file>  another settings file (default ~/.claude/settings.json)
   --zshrc <file>     another zsh startup file (default ~/.zshrc)
   --dry-run          print the result instead of writing it
   -h, --help         show this help";
+
+const SKILL: &str = include_str!("grep/SKILL.md");
+const SKILL_NAME: &str = "sessionkit-grep";
 
 const ZSH_START: &str = "# >>> sessionkit >>>";
 const ZSH_END: &str = "# <<< sessionkit <<<";
@@ -248,5 +255,28 @@ pub fn setup_main(argv: &[String]) -> Result<()> {
         }
         _ => {}
     }
+    install_skill(&options)
+}
+
+/// The grep skill, in the skills folder beside the settings file. Only a skill with our name is
+/// replaced or removed.
+fn install_skill(options: &Options) -> Result<()> {
+    let folder = options.settings.parent().unwrap_or(Path::new(".")).join("skills").join(SKILL_NAME);
+    let file = folder.join("SKILL.md");
+    let current = std::fs::read_to_string(&file).ok();
+    if options.remove {
+        if current.is_some_and(|text| text.contains(&format!("name: {SKILL_NAME}\n"))) {
+            std::fs::remove_file(&file).map_err(|e| e.to_string())?;
+            let _ = std::fs::remove_dir(&folder);
+            println!("sessionkit setup: {}\n  - removed the skill for sessionkit grep", file.display());
+        }
+        return Ok(());
+    }
+    if current.as_deref() == Some(SKILL) {
+        return Ok(());
+    }
+    std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
+    std::fs::write(&file, SKILL).map_err(|e| e.to_string())?;
+    println!("sessionkit setup: {}\n  - skill: Claude Code uses sessionkit grep to find code by asking what it does", file.display());
     Ok(())
 }

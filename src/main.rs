@@ -11,6 +11,7 @@
 
 mod cache;
 mod claude;
+mod grep;
 mod js;
 mod measure;
 mod next;
@@ -28,6 +29,7 @@ Usage:
   sessionkit statusline                 Claude Code status line: context, cost per call, cache
   sessionkit hook session-start|prompt  Claude Code hooks: warn on a costly resume or cold message
   sessionkit setup [--remove]           install the status line and hooks in Claude Code
+  sessionkit grep \"question\" [root]     find code by asking what it does (Jev, costs money)
   sessionkit \"prompt\"                   the same as start
 
 Run sessionkit <command> --help for the options of a command.";
@@ -53,6 +55,11 @@ fn main() {
         "statusline" => claude::statusline_main(),
         "hook" => claude::hook_main(rest),
         "setup" => setup::setup_main(rest),
+        "grep" => grep::grep_main(rest),
+        #[cfg(feature = "test-api")]
+        "grep-inspect" => grep::inspect_main(rest),
+        #[cfg(feature = "test-api")]
+        "grep-python" => grep::python_main(rest),
         _ => start::start_main(&args),
     };
     if let Err(message) = result {

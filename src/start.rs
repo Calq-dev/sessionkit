@@ -257,6 +257,11 @@ fn key() -> Result<(String, KeySource)> {
     Ok(found)
 }
 
+/// The TypeSafe key, for other commands: the environment, else the keychain, else 1Password.
+pub fn typesafe_key() -> Result<String> {
+    key().map(|(key, _)| key)
+}
+
 // ---------------------------------------------------------------- estimating
 
 pub const CHARS_PER_TOKEN: f64 = 3.5; // measured 3.76 on a real run; lower, so the estimate stays an upper bound
