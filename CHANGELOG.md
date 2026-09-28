@@ -2,6 +2,22 @@
 
 All notable changes to sessionkit, called jev-start before 0.3.0. The format follows [Keep a Changelog](https://keepachangelog.com).
 
+## [0.9.0] - 2026-09-28
+
+### Added
+
+- **`sessionkit grep "question" [root]`** finds code by asking what it does: the relevant files
+  with verbatim source and declaration locations, for a coding agent. A port of jevgrep
+  (MIT) that asks Jev the same questions; compared with `jg` 0.4.2 it sends the same requests
+  and prints the same output, about four times faster. Python is parsed with tree-sitter,
+  TypeScript and JavaScript with oxc.
+- **`sessionkit setup` installs the skill** for `sessionkit grep` in `~/.claude/skills`;
+  `--remove` takes it out.
+
+### Fixed
+
+- The Homebrew formula installs inside Homebrew's sandbox, which cannot reach the `gh` login.
+
 ## [0.8.0] - 2026-09-28
 
 ### Changed

@@ -1,6 +1,6 @@
 [package]
 name = "sessionkit"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2024"
 description = "Start, measure and analyse agent sessions: resume with only the context that matters, see where tokens and money go."
 publish = false
@@ -11,10 +11,22 @@ path = "src/main.rs"
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+icu_collator = "2.3.1"
+ignore = "0.4.33"
 indexmap = "2"
 libc = "0.2"
+oxc_allocator = "0.151"
+oxc_ast = "0.151"
+oxc_ast_visit = "0.151"
+oxc_parser = "0.151"
+oxc_span = "0.151"
 regex = "1"
 serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = "0.11.0"
+tree-sitter = "0.25"
+tree-sitter-python = "0.25.0"
+unicode-ident = "1.0.26"
+unicode-normalization = "0.1.25"
 ureq = "3"
 uuid = { version = "1", features = ["v4"] }
 

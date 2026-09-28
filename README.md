@@ -10,6 +10,9 @@ Start, measure and analyse your agent sessions.
 - **`sessionkit usage`** shows where the tokens and the money go: by kind of token, by model,
   main sessions against subagents, by project, the largest sessions, cold cache rebuilds, and
   sessions that are cheaper to restart than to continue. Local and free.
+- **`sessionkit grep`** finds code by asking what it does: Jev judges folders, files and
+  declarations for a question, and the answer lists the relevant files with verbatim source,
+  for a coding agent to read. A port of [jevgrep](https://github.com/dzhng/jevgrep).
 - **`sessionkit measure`** measures whether `start` selects the right context.
 - **`sessionkit statusline`** and **`sessionkit hook`** show inside Claude Code what the prompt
   cache costs: the context, the cost of each call, how long the cache stays warm, and a warning
@@ -272,6 +275,56 @@ security delete-generic-password -s sessionkit
 session cards, outlines and exchanges. The kept exchanges also go into the context file and
 the new session. sessionkit does not redact anything, so a secret that is in a transcript can
 end up in all of these places.
+
+## sessionkit grep
+
+```sh
+sessionkit grep "How are telemetry events recorded and sent?"      # in this folder
+sessionkit grep "Which tests cover retry behavior?" ./src          # in a subfolder
+sessionkit grep "Where is the quote price calculated?" --max-source-bytes 20000
+```
+
+Use it when you know the behavior you need but not where it lives. It walks the repository
+breadth first and asks Jev per folder whether it is worth exploring and per file whether it
+helps; then, per declaration in the files it admits, whether that block implements or tests
+what the question asks. The output starts with the relevant files and their roles
+(implementation, caller, test, fixture, helper), then verbatim source with line numbers, then
+the declarations as `name@start-end`. It is evidence for the agent, not a generated answer.
+
+`sessionkit setup` installs a skill in `~/.claude/skills/sessionkit-grep/`, so Claude Code knows
+when and how to use it.
+
+- **What leaves your machine.** Eligible source goes to TypeSafe. Hidden files, dependency and
+  build folders, files that `.gitignore` or `.ignore` exclude, sensitive names (`.env`, keys)
+  and private keys in content stay out; `--hidden`, `--no-ignore`, `--include-dependencies`
+  and `--include-sensitive` each bring one category back.
+- **What it costs.** From about ten Jev calls for a small repository to a few hundred for a
+  large one. Answers are cached in `~/.cache/sessionkit/grep` for seven days, so the same
+  question on unchanged files is free; `--no-cache` skips the cache.
+- **Output.** All output goes to stdout. Exit codes: 0 complete, 2 incomplete (some parts could
+  not be judged; the output says which), 1 failed, 130 interrupted.
+
+### How it relates to jevgrep
+
+`sessionkit grep` asks Jev the same questions as `jg` 0.4.2 (model `jev-1.13.0`): the same
+wording, thresholds, batch limits, key order and traversal. Compared with `jg` against a local
+stand-in for TypeSafe, on eleven questions in eight repositories, it sent the same requests byte
+for byte and printed the same output. The one difference in requests is the order of the
+evidence list in the second pass, which follows which file finished first; that order varies
+between runs of `jg` too. It is about four times faster, and needs no Node.js.
+
+jevgrep parses Python with CPython 3.11 and TypeScript with the TypeScript compiler. Here
+Python goes through tree-sitter and TypeScript and JavaScript through oxc. On 1,500 Python files
+and 1,494 TypeScript and JavaScript files the declaration boundaries and comments came out the
+same as jevgrep's, except for one Python file where tree-sitter misreads a line continued inside
+parentheses with less indentation. What CPython 3.11 rejects falls back to text, as in jevgrep:
+Python 2, 3.12 type parameters and aliases, 3.12 f-strings, 3.14 t-strings, inconsistent
+indentation or tabs, empty blocks, and parameters or arguments in the wrong order. A few errors
+that only CPython's compiler reports (such as `del 1`) still parse here.
+
+Other differences: the cache is its own (answers computed on jevgrep's parsers are never
+reused), the key is sessionkit's TypeSafe key, and a refused key says so instead of "Command
+failed". jevgrep is MIT-licensed; see [licenses/jevgrep-MIT.txt](licenses/jevgrep-MIT.txt).
 
 ## sessionkit measure
 
