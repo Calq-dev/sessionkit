@@ -2,6 +2,14 @@
 
 All notable changes to sessionkit, called jev-start before 0.3.0. The format follows [Keep a Changelog](https://keepachangelog.com).
 
+## [0.9.1] - 2026-09-28
+
+### Fixed
+
+- **`sessionkit ask` shows the answer.** Under every answer that is not a clear no stands the
+  line that answers it. Before, an open question such as "where are the files of this client?"
+  got only a probability and the question back.
+
 ## [0.9.0] - 2026-09-28
 
 ### Added

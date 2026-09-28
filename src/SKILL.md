@@ -52,9 +52,15 @@ sessionkit ask src/upload.ts \
 
 ```text
 0.91  Does this file retry a failed upload?
+      line 88  for (let attempt = 0; attempt < 3; attempt++) {
 0.97  fetch  (confidence 0.97)  Which HTTP client does it use?
+      line 3  const response = await fetch(url, { method: "PUT", body });
 0.04  Does it talk to a real database?
 ```
+
+Under every answer that is not a clear no stands the line that answers it, so an open question
+("where is the upload URL set?") gets its answer too. The line shows where to look; it can be a
+caller rather than the place itself, so read around it before you rely on it.
 
 `--options`, `--yes` and `--no` belong to the question right before them. With `--options` the
 answer is the likeliest option; `none of these` is added, and when it wins the file does not say.
