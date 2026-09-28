@@ -18,13 +18,23 @@ Start, measure and analyse your agent sessions.
 
 ## Install
 
-Requires Node.js 20 or later, access to the Calq-dev GitHub organisation, and for `start` the
-agent you start: `claude`, `codex` or `jcode`. There are no dependencies.
+Requires a Mac, access to the Calq-dev GitHub organisation, and for `start` the agent you
+start: `claude`, `codex` or `jcode`.
 
 ```sh
-npm install -g github:Calq-dev/sessionkit   # the sessionkit command; run again to update
-sessionkit setup                            # the status line and hooks in Claude Code
+brew install calq-dev/tap/sessionkit   # the sessionkit command; brew upgrade updates it
+sessionkit setup                        # the status line and hooks in Claude Code
 ```
+
+The repository is private, so Homebrew downloads with your GitHub login: the one of `gh`
+(`gh auth login`), or a token in `HOMEBREW_GITHUB_API_TOKEN`.
+
+From the npm version: run `npm uninstall -g sessionkit`, then `sessionkit setup` again. Setup
+replaces the entries that pointed to the npm install.
+
+To build it yourself: `cargo build --release` puts the binary in `target/release/sessionkit`.
+A tag such as `v0.8.0` builds a release for Apple Silicon and Intel and updates the formula in
+`Calq-dev/homebrew-tap`.
 
 `start` and `measure` also need the TypeSafe key: they read it from 1Password
 (`op://Calq/TypeSafe API/credential`) once and keep it in the keychain. `usage`, the status
@@ -266,7 +276,7 @@ end up in all of these places.
 ## sessionkit measure
 
 `measure` checks the selection of `start` with labels that code makes, so a run needs no hand
-work. Results go to `eval/results/` (ignored by git) and hold ids and scores, not text.
+work. Results go to `~/.cache/sessionkit/measure/` and hold ids and scores, not text.
 
 **A run costs money.** It sends parts of your transcripts to TypeSafe: about $0.20 for the
 default size (30 cuts, 20 routing pairs), about $0.06 for a smoke test with
