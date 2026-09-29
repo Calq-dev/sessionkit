@@ -74,7 +74,7 @@ pub fn model() -> String {
     setting("MODEL").filter(|model| !model.is_empty()).unwrap_or_else(|| "jev-latest".into())
 }
 
-fn confirm_above() -> f64 {
+pub fn confirm_above() -> f64 {
     setting("CONFIRM_ABOVE").map_or(0.05, |value| js::parse_number(Some(&value)))
 }
 
@@ -522,6 +522,10 @@ pub struct Exchange {
     /// The files the exchange edited, in the order of their first edit.
     pub files: Vec<String>,
     pub tool_calls: u64,
+    /// The shell commands the exchange ran, collapsed to one line each.
+    pub commands: Vec<String>,
+    /// Sent by a program, not typed: an SDK run or a message from another agent.
+    pub automated: bool,
     /// Which planted turn this is, in a measurement.
     pub plant: Option<&'static str>,
 }
@@ -775,6 +779,7 @@ fn record_tool_call(session: &mut Session, exchange: usize, call: &Value, timest
         session.changed_files.insert(file.to_string(), timestamp.to_string());
     } else if name == "Bash" {
         if let Some(command) = field("command").and_then(Value::as_str).filter(|c| !c.is_empty()) {
+            session.exchanges[exchange].commands.push(command.to_string());
             session.commands.push(js::trim(&js::collapse_space(command)).to_string());
         }
     }
@@ -840,7 +845,10 @@ fn parse_session(path: &Path) -> Result<Session> {
             if prompt.is_empty() {
                 continue;
             }
-            session.exchanges.push(Exchange { prompt, answer: String::new(), timestamp, files: Vec::new(), tool_calls: 0, plant: None });
+            let automated = js::str_of(&entry, "promptSource") == "sdk" || prompt.contains("<teammate-message");
+            session.exchanges.push(Exchange {
+                prompt, answer: String::new(), timestamp, files: Vec::new(), tool_calls: 0, commands: Vec::new(), automated, plant: None,
+            });
             current = Some(session.exchanges.len() - 1);
         } else if let Some(exchange) = current.filter(|_| kind == "assistant" && !js::truthy(entry.get("isSidechain"))) {
             let text = clean_text(&text_of(content_of(&entry)));

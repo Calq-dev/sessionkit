@@ -8,6 +8,7 @@
 //   sessionkit setup    put the status line and hooks in Claude Code's settings
 //   sessionkit grep, sessionkit ask   find code, or a fact about a file, by asking Jev
 //   sessionkit compact  compact a conversation without a summary, from Claude Code's /compact
+//   sessionkit skills   find work you repeat across sessions, where a skill would save time
 //
 // A prompt without a command means start.
 
@@ -20,6 +21,7 @@ mod js;
 mod measure;
 mod next;
 mod setup;
+mod skills;
 mod start;
 mod usage;
 
@@ -36,6 +38,7 @@ Usage:
   sessionkit grep \"question\" [root]     find code by asking what it does (Jev, costs money)
   sessionkit ask <file> \"question\"      ask about a file instead of reading it (Jev, costs money)
   sessionkit compact <session>          what a compaction without summary would keep (Jev)
+  sessionkit skills [--draft n]         find work you repeat, where a skill would help (Jev)
   sessionkit \"prompt\"                   the same as start
 
 Run sessionkit <command> --help for the options of a command.";
@@ -64,6 +67,7 @@ fn main() {
         "grep" => grep::grep_main(rest),
         "ask" => ask::ask_main(rest),
         "compact" => compact::compact_main(rest),
+        "skills" => skills::skills_main(rest),
         #[cfg(feature = "test-api")]
         "grep-inspect" => grep::inspect_main(rest),
         #[cfg(feature = "test-api")]

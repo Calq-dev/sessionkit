@@ -2,6 +2,16 @@
 
 All notable changes to sessionkit, called jev-start before 0.3.0. The format follows [Keep a Changelog](https://keepachangelog.com).
 
+## [0.10.0] - 2026-09-29
+
+### Added
+
+- **`sessionkit skills`** finds work you repeat across Claude Code sessions, where a skill would
+  save time. Alike exchanges are grouped on the machine; Jev judges whether each group repeats
+  one task, which installed skill already covers it, and which groups are the same task.
+  `--draft n` starts Claude Code to write the skill; `--measure` scores random groups and split
+  groups beside the real ones.
+
 ## [0.9.1] - 2026-09-28
 
 ### Fixed

@@ -20,6 +20,10 @@ Start, measure and analyse your agent sessions.
   `/compact` and auto-compaction: Jev decides per tool call whether it and its output are still
   needed, and all text stays verbatim. A port of
   [fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction).
+- **`sessionkit skills`** finds work you repeat across sessions, where a skill would save time:
+  alike exchanges are grouped on your machine, Jev judges whether each group repeats one task
+  and whether an installed skill already covers it, and `--draft` starts Claude Code to write
+  the skill.
 - **`sessionkit measure`** measures whether `start` selects the right context.
 - **`sessionkit statusline`** and **`sessionkit hook`** show inside Claude Code what the prompt
   cache costs: the context, the cost of each call, how long the cache stays warm, and a warning
@@ -425,6 +429,60 @@ tool input in the question moved the call question to 0.67 (5 of 11 needed kept,
 and left the output question at chance; it is not in use. In practice, then, this is "keep all
 text, drop old tool output", which Claude can re-run. The sample is small, and three sessions
 with both labels out of a thousand says the labels need work too.
+
+## sessionkit skills
+
+You probably ask agents for the same work again and again: merge and deploy, make a repository,
+reset a password. Each time the agent works out the steps anew. `sessionkit skills` finds that
+work in your Claude Code sessions, so you can write a skill for it once.
+
+```sh
+sessionkit skills             # the groups most likely to be one recurring task
+sessionkit skills --draft 2   # start Claude Code to write a skill for group 2
+sessionkit skills --measure   # also score random groups, and test joining groups
+```
+
+```text
+ 1. 0.96  4 sessions · 3 projects · 4 days · 21 tool calls
+    commands: ssh, gh pr, git fetch, git log, git diff
+    > lankquote-next  deploy
+    > feedback-use-package  ja prima opze doe maar deploy
+```
+
+How it works:
+
+1. **Group, locally.** Every exchange (your request and the shell commands the agent ran for it)
+   becomes a vector: the commands (`gh repo`, `php artisan`; heredocs and quoted scripts are not
+   commands), pairs of commands in a row, and the words of the request. Alike exchanges form a
+   group, and a group counts when it recurs in three sessions on two days. Prompts sent by a
+   program, an SDK run or a message from another agent, do not count. 968 sessions take about
+   one second.
+2. **Judge, with Jev.** One request per group, with your requests beside their commands: is this
+   one recurring task, one subject with different work, or unrelated; and which installed skill
+   (yours, and those of enabled plugins) already covers it.
+3. **Join.** Groups that may be a task (0.5 or more) and ran alike commands go to Jev in pairs:
+   is this the same task? Above 0.6 they become one group.
+4. **Draft.** `--draft n` hands group n of the last run to Claude Code, with the transcript of
+   every exchange, and asks it to propose a skill and to ask before it writes one.
+
+A run costs about $0.002. The requests go to TypeSafe clipped to 300 characters, with the names
+of the commands, not their arguments or output.
+
+**Measured**, 29 September 2026, 968 sessions (`--measure`, $0.002):
+
+| Group | Count | "One recurring task" |
+| --- | --- | --- |
+| Exchanges drawn at random from four sessions | 10 | at most 0.01 |
+| Real groups, top of the list | 6 | 0.63 to 0.94 |
+| Real groups, the rest | 18 | 0.01 to 0.42 |
+
+| Pair | Count | "Same task" |
+| --- | --- | --- |
+| Two halves of one group | 5 | 0.49 to 0.85, median 0.70 |
+| Two different groups | 21 | 0.06 to 0.53 |
+
+The random groups never pass, so the list starts with real work. The labels are by hand, on one
+person's sessions: read the top of the list, not a threshold.
 
 ## sessionkit measure
 
