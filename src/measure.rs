@@ -42,17 +42,17 @@ const REQUEST_BUDGET_CHARS: usize = 100000;
 
 /// A small seeded generator, so a run can be repeated with the same sample. The arithmetic is in
 /// doubles, as in the JavaScript version, so a seed draws the same sample in both.
-struct Random {
-    seed: f64,
+pub struct Random {
+    pub seed: f64,
 }
 
 impl Random {
-    fn next(&mut self) -> f64 {
+    pub fn next(&mut self) -> f64 {
         self.seed = (self.seed * 1103515245.0 + 12345.0) % 2147483648.0;
         self.seed / 2147483648.0
     }
 
-    fn index(&mut self, count: usize) -> usize {
+    pub fn index(&mut self, count: usize) -> usize {
         (self.next() * count as f64).floor() as usize
     }
 
@@ -105,7 +105,7 @@ fn cut_session(session: &Session, k: usize) -> Session {
 }
 
 fn plant(prompt: &str, answer: &str, timestamp: &str) -> Exchange {
-    Exchange { prompt: prompt.into(), answer: answer.into(), timestamp: timestamp.into(), files: Vec::new(), tool_calls: 0, plant: None }
+    Exchange { prompt: prompt.into(), answer: answer.into(), timestamp: timestamp.into(), files: Vec::new(), tool_calls: 0, commands: Vec::new(), automated: false, plant: None }
 }
 
 const RULE_PLANT: (&str, &str) = (
