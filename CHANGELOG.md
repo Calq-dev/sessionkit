@@ -2,6 +2,14 @@
 
 All notable changes to sessionkit, called jev-start before 0.3.0. The format follows [Keep a Changelog](https://keepachangelog.com).
 
+## [Unreleased]
+
+### Changed
+
+- `sessionkit grep` checks that a source is unchanged once per request, right before it is sent
+  or its cached answer is returned, and waits up to 60 seconds for TypeSafe instead of 15; as
+  jevgrep does since 0.4.3. The requests are the same.
+
 ## [0.10.0] - 2026-09-29
 
 ### Added
