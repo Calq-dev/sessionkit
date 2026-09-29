@@ -173,6 +173,12 @@ fn parse_arguments(argv: &[String]) -> Options {
                 println!("{}", usage_text());
                 std::process::exit(0);
             }
+            // A mistyped option must not start an agent with the option as its prompt; a prompt that
+            // mentions an option is one quoted argument, which does not start with dashes.
+            word if word.starts_with("--") => {
+                eprintln!("sessionkit: unknown option {word}\n{}", usage_text());
+                std::process::exit(2);
+            }
             word => words.push(word.to_string()),
         }
         i += 1;

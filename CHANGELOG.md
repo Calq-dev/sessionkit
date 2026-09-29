@@ -2,6 +2,22 @@
 
 All notable changes to sessionkit, called jev-start before 0.3.0. The format follows [Keep a Changelog](https://keepachangelog.com).
 
+## [0.12.0] - 2026-09-29
+
+### Added
+
+- **A tip after the first large read.** When an agent reads a whole file of 400 lines or more, one
+  line in its context says that `sessionkit ask` answers a question about a file without reading
+  it, and `--find` names the line. Once per session and per subagent. Agents rarely used the
+  tools: 1 to 2% of reads and searches, with MCP tools as well as with the skill.
+- `sessionkit --version`.
+
+### Fixed
+
+- An unknown option to `sessionkit` or `sessionkit start`, such as `--version` before, started an
+  agent with the option as its prompt, reading earlier sessions with Jev. It is an error now.
+- `setup` names every hook of the plugin.
+
 ## [0.11.0] - 2026-09-29
 
 ### Added

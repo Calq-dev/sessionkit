@@ -39,6 +39,7 @@ Usage:
   sessionkit ask <file> \"question\"      ask about a file instead of reading it (Jev, costs money)
   sessionkit compact <session>          what a compaction without summary would keep (Jev)
   sessionkit skills [--draft n]         find work you repeat, where a skill would help (Jev)
+  sessionkit --version                  print the version
   sessionkit \"prompt\"                   the same as start
 
 Run sessionkit <command> --help for the options of a command.";
@@ -53,6 +54,10 @@ fn main() {
     };
     if matches!(command.as_str(), "help" | "-h" | "--help") {
         println!("{HELP}");
+        return;
+    }
+    if matches!(command.as_str(), "version" | "-V" | "--version") {
+        println!("sessionkit {}", env!("CARGO_PKG_VERSION"));
         return;
     }
     let rest = &args[1..];
