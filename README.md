@@ -138,6 +138,14 @@ apart.
   hook (`hook prompt`) acts alone: where it can it closes the session and continues in a fresh
   one, elsewhere it stops the message once; send it again to go ahead.
 
+- **After the first large read** (400 lines or more, the whole file): one line in the context
+  tells the agent that `sessionkit ask` answers a question about a file without reading it, and
+  `--find` names the line to read. Agents read whole files out of habit; a skill alone did not
+  change that. Before this tip, 1 to 2% of the searches and reads outside this repository went
+  through Jev, with ask-jev as MCP tools as well as with the skill. Once per session and per
+  subagent, so it costs a few hundred tokens; the read itself goes ahead unchanged. A function
+  hook on `tool.call` in the plugin, like the dialog above.
+
 ### Continue in a fresh session from inside Claude Code
 
 When a message goes to a cold, expensive session and you choose a fresh session, the prompt
