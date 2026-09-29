@@ -118,16 +118,30 @@ apart.
 - **On `--resume` or fork** (`hook session-start`): when the cache has expired and writing it
   again costs more than $1, it says so before the first message, with Claude Code's own
   estimate (`estimated_cache_write_usd`).
-- **Before a message to a cold session** (`hook prompt`): when writing the context again costs
-  more than $2, the message does not go out. A warning would come too late, because the call
-  would already run. Where it can (see below), the hook closes the session and continues your
-  message in a fresh one: `sessionkit start --session <this session> "your message"`. Elsewhere
-  it stops the message once and says what it would cost; send it again to go ahead.
+- **Before a message to a cold session**: when writing the context again costs more than $2,
+  the message does not go out until you choose. A warning would come too late, because the call
+  would already run. Claude Code's own question dialog asks, with the cost in the question:
+
+  ```text
+  The prompt cache of this session has expired. This message writes 352K tokens to the cache
+  again: about $2.82, and every later message re-reads them ($0.070 each). …
+  ❯ Fresh session
+    Continue here ($2.82)
+  ```
+
+  **Fresh session** closes this session and continues your message in a fresh one:
+  `sessionkit start --session <this session> "your message"`. **Continue here** sends it. Where
+  nothing can open a fresh session (see below), the choice is **Continue here** or **Stop**; Stop,
+  or closing the dialog, puts your message back in the prompt box. The dialog is the engine's,
+  so asking costs no model call. It comes from the plugin that `setup` installs, a function hook
+  on `prompt.submit`, which needs `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`. Without it, the settings
+  hook (`hook prompt`) acts alone: where it can it closes the session and continues in a fresh
+  one, elsewhere it stops the message once; send it again to go ahead.
 
 ### Continue in a fresh session from inside Claude Code
 
-When a message goes to a cold, expensive session, the prompt hook closes it and continues the
-message in a fresh session, in the same terminal. You can also do this yourself, for instance
+When a message goes to a cold, expensive session and you choose a fresh session, the prompt
+hook closes it and continues the message in a fresh session, in the same terminal. You can also do this yourself, for instance
 on a warm session, with `sessionkit next` and Claude Code's `!` prefix:
 
 ```text

@@ -7,6 +7,8 @@
 //                        estimate of what one call takes from them), and the cache time
 //   hook session-start   on --resume: what the first request will cost when the cache is cold
 //   hook prompt          before a message to a cold, expensive session: stop it once and say why
+//   hook cold-check, hook cold-choice   the same check for the plugin's prompt.submit hook, which
+//                        asks in a dialog: continue here, or continue in a fresh session
 //
 // Everything here reaches the user only (the status line, systemMessage, a block reason). Nothing
 // is added to Claude's context, so the checks cost no tokens.
@@ -14,7 +16,7 @@
 use crate::Result;
 use crate::cache::{CacheState, FIVE_MINUTES, cache_state};
 use crate::js::{self, fixed, num};
-use crate::next::{env_pid, handoff_key, leave_handoff, terminate};
+use crate::next::{env_pid, handoff_key, leave_handoff, ps_field, terminate, transcript_of};
 use crate::usage::{home, price_of, read_price};
 use serde_json::{Value, json};
 use std::io::{Read, Write};
@@ -284,18 +286,41 @@ fn session_start(input: &Value) -> Option<Value> {
     }))
 }
 
+/// The cache state of a session whose cache has gone cold, when writing the context again costs
+/// more than the limit.
+fn cold_state(input: &Value) -> Option<CacheState> {
+    let state = transcript_state(input)?;
+    (!state.warm && state.cold_call.unwrap_or(f64::NAN) >= setting("BLOCK_COLD_ABOVE", 2.0)).then_some(state)
+}
+
+/// A message to this cold session was let through: the next one goes through too, until the next
+/// call makes the cache warm and the check starts over.
+fn ack_file(id: &str) -> PathBuf {
+    cache_dir().join("cold-ack").join(id)
+}
+
+fn acked(id: &str, state: &CacheState) -> bool {
+    std::fs::read_to_string(ack_file(id)).is_ok_and(|text| text == js::number(state.last_call_time))
+}
+
+fn ack(id: &str, state: &CacheState) -> Result<()> {
+    let file = ack_file(id);
+    std::fs::create_dir_all(file.parent().unwrap()).map_err(|e| e.to_string())?;
+    std::fs::write(&file, js::number(state.last_call_time)).map_err(|e| e.to_string())
+}
+
 /// Before a message to a session whose cache has gone cold, when writing the context again costs
 /// more than the limit. When something in this terminal can open the next session (see next.rs),
 /// close this one and continue the message in a fresh one. Else stop the message once: sending it
-/// again goes through, until the next call makes the cache warm and the check starts over.
+/// again goes through. A message the plugin's dialog let through is acked, and goes through.
 /// Returns the hook result and the Claude Code to stop once the result is out.
 fn prompt(input: &Value) -> Result<Option<(Value, Option<i64>)>> {
-    let Some(state) = transcript_state(input) else { return Ok(None) };
+    let Some(state) = cold_state(input) else { return Ok(None) };
     let cold_call = state.cold_call.unwrap_or(f64::NAN);
-    if state.warm || !(cold_call >= setting("BLOCK_COLD_ABOVE", 2.0)) {
+    let id = session_id(input);
+    if acked(&id, &state) {
         return Ok(None);
     }
-    let id = session_id(input);
 
     let claude_pid = env_pid("CLAUDE_PID");
     let text = js::str_of(input, "prompt");
@@ -313,14 +338,7 @@ fn prompt(input: &Value) -> Result<Option<(Value, Option<i64>)>> {
         }), claude_pid)));
     }
 
-    let ack_dir = cache_dir().join("cold-ack");
-    let ack = ack_dir.join(&id);
-    let marker = js::number(state.last_call_time);
-    if std::fs::read_to_string(&ack).is_ok_and(|text| text == marker) {
-        return Ok(None);
-    }
-    std::fs::create_dir_all(&ack_dir).map_err(|e| e.to_string())?;
-    std::fs::write(&ack, &marker).map_err(|e| e.to_string())?;
+    ack(&id, &state)?;
     Ok(Some((json!({
         "decision": "block",
         "reason": format!("sessionkit: the prompt cache of this session has expired. This message would write \
@@ -331,8 +349,97 @@ fn prompt(input: &Value) -> Result<Option<(Value, Option<i64>)>> {
     }), None)))
 }
 
+/// The Claude Code a hook module's command runs under: CLAUDE_PID where the engine sets it, else
+/// the parent, since the engine starts the command itself, without a shell. A parent that is not
+/// Claude Code is not one to stop.
+fn claude_pid() -> Option<i64> {
+    env_pid("CLAUDE_PID").or_else(|| {
+        // SAFETY: getppid has no preconditions.
+        let parent = i64::from(unsafe { libc::getppid() });
+        let name = ps_field("comm", parent).unwrap_or_default();
+        (parent > 1 && Path::new(&name).file_name().is_some_and(|n| n.to_string_lossy().starts_with("claude"))).then_some(parent)
+    })
+}
+
+/// The hook input for a session the plugin names by id: its transcript.
+fn session_input(input: &Value) -> Value {
+    let id = js::str_of(input, "session_id");
+    let path = transcript_of(id).map(|path| path.to_string_lossy().into_owned()).unwrap_or_default();
+    json!({"session_id": id, "transcript_path": path})
+}
+
+/// For the plugin's prompt.submit hook: is this session cold and expensive, and can a fresh
+/// session be opened in this terminal? The dialog's question comes from here.
+fn cold_check(input: &Value) -> Result<Value> {
+    let input = session_input(input);
+    let id = session_id(&input);
+    let Some(state) = cold_state(&input).filter(|state| !acked(&id, state)) else { return Ok(json!({"cold": false})) };
+    let fresh = match claude_pid() {
+        Some(pid) => handoff_key(pid)?.is_some(),
+        None => false,
+    };
+    let cost = usd(state.cold_call.unwrap_or(f64::NAN));
+    let restart = format!("sessionkit start --session {} \"your prompt\"", js::head(&id, 8));
+    Ok(json!({
+        "cold": true,
+        "cost": cost,
+        "fresh": fresh,
+        "question": format!("The prompt cache of this session has expired. This message writes {} tokens to the \
+            cache again: about {cost}, and every later message re-reads them ({} each). {}", tokens(state.context),
+            usd(state.per_call.unwrap_or(f64::NAN)),
+            if fresh { "A fresh session starts with only what matters for this message. Where do you go on?" }
+            else { "Go on here, or stop and start fresh yourself?" }),
+        "stop": format!("sessionkit: your message is back in the prompt box. To start fresh, exit and run: {restart}"),
+    }))
+}
+
+/// For the plugin's prompt.submit hook, once the person chose: `continue` lets the message through
+/// the settings hook; `fresh` leaves the message for the owner of the terminal and stops Claude Code.
+fn cold_choice(choice: Option<&str>, input: &Value) -> Result<(Value, Option<i64>)> {
+    let session = session_input(input);
+    let id = session_id(&session);
+    match choice {
+        Some("continue") => {
+            if let Some(state) = cold_state(&session) {
+                ack(&id, &state)?;
+            }
+            Ok((json!({"ok": true}), None))
+        }
+        Some("fresh") => {
+            let key = match claude_pid() {
+                Some(pid) => handoff_key(pid)?.map(|key| (key, pid)),
+                None => None,
+            };
+            let Some((key, pid)) = key else {
+                return Ok((json!({"ok": false, "reason": "nothing in this terminal can open the next session"}), None));
+            };
+            leave_handoff(&key, &id, js::str_of(input, "prompt"));
+            Ok((json!({"ok": true}), Some(pid)))
+        }
+        _ => Err("hook cold-choice takes continue or fresh.".into()),
+    }
+}
+
 pub fn hook_main(argv: &[String]) -> Result<()> {
     let input = read_input();
+    // The plugin reads these answers; an error goes to stderr, and the plugin lets the message through.
+    match argv.first().map(String::as_str) {
+        Some("cold-check") => {
+            println!("{}", js::stringify(&cold_check(&input)?));
+            return Ok(());
+        }
+        Some("cold-choice") => {
+            let (answer, stop) = cold_choice(argv.get(1).map(String::as_str), &input)?;
+            let mut stdout = std::io::stdout();
+            let _ = writeln!(stdout, "{}", js::stringify(&answer));
+            let _ = stdout.flush();
+            if let Some(pid) = stop {
+                terminate(pid);
+            }
+            return Ok(());
+        }
+        _ => {}
+    }
     // A hook must never stop Claude Code because this check failed.
     let output = match argv.first().map(String::as_str) {
         Some("session-start") => session_start(&input).map(|value| (value, None)),
