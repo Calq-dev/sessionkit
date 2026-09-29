@@ -67,14 +67,14 @@ fn parse_arguments(argv: &[String]) -> Options {
     options
 }
 
-fn transcript_of(session: &str) -> Option<PathBuf> {
+pub fn transcript_of(session: &str) -> Option<PathBuf> {
     let projects = projects_dir();
     js::read_dir_names(&projects).ok()?.into_iter()
         .map(|folder| projects.join(folder).join(format!("{session}.jsonl")))
         .find(|path| path.exists())
 }
 
-fn ps_field(field: &str, pid: i64) -> Result<String> {
+pub fn ps_field(field: &str, pid: i64) -> Result<String> {
     let output = Command::new("ps").args(["-o", &format!("{field}="), "-p", &pid.to_string()]).output()
         .map_err(|error| error.to_string())?;
     if !output.status.success() {

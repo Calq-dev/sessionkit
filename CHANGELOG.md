@@ -2,6 +2,22 @@
 
 All notable changes to sessionkit, called jev-start before 0.3.0. The format follows [Keep a Changelog](https://keepachangelog.com).
 
+## [0.11.0] - 2026-09-29
+
+### Added
+
+- **A choice before a message to a cold session.** When the prompt cache has expired and writing
+  it again costs more than the limit, Claude Code's own question dialog asks: continue in a fresh
+  session, or here, with the cost in the question. Stop, or closing the dialog, puts the message
+  back in the prompt box. A function hook on `prompt.submit` in the plugin that `setup` installs;
+  without function hooks the settings hook acts as before.
+
+### Changed
+
+- `sessionkit grep` checks that a source is unchanged once per request, right before it is sent
+  or its cached answer is returned, and waits up to 60 seconds for TypeSafe instead of 15; as
+  jevgrep does since 0.4.3. The requests are the same.
+
 ## [0.10.0] - 2026-09-29
 
 ### Added

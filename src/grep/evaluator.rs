@@ -13,7 +13,7 @@ use std::time::Duration;
 pub const MODEL: &str = "jev-1.13.0";
 const BASE_URL: &str = "https://api.typesafe.ai/v1";
 const REQUEST_LIMIT: usize = 50_000;
-const TIMEOUT_MS: u64 = 15_000;
+const TIMEOUT_MS: u64 = 60_000; // jevgrep 0.4.3 and later, for TypeSafe: a large state can take longer than 15 s
 /// Our own parser identity: answers computed on jevgrep's CPython and TypeScript boundaries are
 /// never reused.
 const PARSER_VERSION: &str = "sessionkit-tree-sitter-python-0.25-oxc-0.151";
@@ -205,11 +205,9 @@ impl Evaluator {
     }
 
     /// Evaluate `{state, questions}` in the order of its ticket. `before_attempt` checks that every
-    /// source is still unchanged: once in turn, and again before each attempt.
+    /// source is still unchanged: before each attempt, and before a cached answer is returned.
     pub fn evaluate(&self, request: &Value, navigation: bool, before_attempt: &dyn Fn() -> Result<(), Failure>, ticket: u64) -> Result<Answers, Failure> {
         let mut turn = Some(self.wait_turn(ticket));
-        self.assert_active()?;
-        before_attempt()?;
         self.assert_active()?;
         let questions = request["questions"].as_object().cloned().unwrap_or_default();
         let key = self.cache.as_ref().map(|_| cache_key(&self.namespace(), request));
@@ -217,6 +215,8 @@ impl Evaluator {
             if let Some(cached) = cache.get(key) {
                 self.assert_active()?;
                 if cached.len() == questions.len() && questions.keys().all(|id| cached.get(id).is_some_and(|p| (0.0..=1.0).contains(p))) {
+                    before_attempt()?;
+                    self.assert_active()?;
                     self.cache_hits.fetch_add(1, Ordering::SeqCst);
                     return Ok(questions.keys().map(|id| (id.clone(), cached[id])).collect());
                 }
