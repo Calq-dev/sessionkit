@@ -19,7 +19,8 @@ Start, measure and analyse your agent sessions.
 - **`sessionkit compact`** compacts a Claude Code conversation without a summary, from
   `/compact` and auto-compaction: Jev decides per tool call whether it and its output are still
   needed, and all text stays verbatim. A port of
-  [fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction).
+  [fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction), with a measured
+  question about the output.
 - **`sessionkit skills`** finds work you repeat across sessions, where a skill would save time:
   alike exchanges are grouped on your machine, Jev judges whether each group repeats one task
   and whether an installed skill already covers it, and `--draft` starts Claude Code to write
@@ -410,8 +411,8 @@ compact` rewrites nothing. It shows Jev the whole conversation, with every tool 
 by a short note, and asks per tool call two questions: should the call stay, and should its
 full output stay verbatim. An output it lets go is cut to its first 300 characters and a note;
 a call it lets go is dropped together with its output. The first message and the newest six
-are never touched, and all text of you and Claude stays as it was. The method, the wording of
-the questions and the limits are those of fast-jev-compaction 0.3.0.
+are never touched, and all text of you and Claude stays as it was. The method and the limits are
+those of fast-jev-compaction 0.3.0; the question about the output is measured and reworded (below).
 
 `sessionkit setup` installs it as a Claude Code plugin with one function hook on
 `session.compact`: `/compact`, auto-compaction and Claude Code's precomputed compaction all go
@@ -421,7 +422,8 @@ characters, Claude Code writes its own summary as before. A toast says which hap
 ```sh
 sessionkit compact last               # what a compaction now would keep; changes nothing
 sessionkit compact 9d17b657 --verbose # per tool call: the decision and both probabilities
-sessionkit compact --measure 30       # measure the questions on real sessions (costs money)
+sessionkit compact --measure build cuts.json      # labelled cuts from every session (free)
+sessionkit compact --measure run cuts.json train  # measure the questions on them (costs money)
 ```
 
 Function hooks are an early-access part of Claude Code: they need
@@ -430,81 +432,31 @@ can change between releases. Tested with Claude Code 2.1.284: a `/compact` on a 
 89,812 tokens left 14,770 in 385 ms, with the conversation verbatim and three of four file
 reads gone. If fast-jev-compaction is installed too, turn one of them off; `setup` says so.
 
-**Checked against fast-jev-compaction.** Against a stand-in for Jev with fixed answers, on 18
-real transcripts, it sent the same requests byte for byte and kept the same messages, including
-the transcripts where the state had to shrink.
+**Measured, and the output question reworded.** `--measure build` cuts real conversations at
+points between 5% and 95% of every stretch between two compactions, as auto-compaction would,
+and labels each Read that compaction may touch by what happened to the file after the cut:
+*came back* (edited, read again, or named in another tool's input, such as a grep) or *unused*
+(never again). Screenshots and the output of background tasks are left out, and cuts are split
+into train and test by session. `--measure run` compacts every cut and reports, within each cut,
+how often an output that came back scores above one that did not (0.5 is chance). Run of 29
+September 2026: 140 sessions, at most two cuts each, 108 train cuts and 80 test cuts:
 
-**Measured: the questions do not yet tell what is still needed.** `--measure` cuts real
-sessions at a prompt and labels the file reads before the cut with what happened after it:
-*needed* when the file was edited without being read again, *unused* when it never came back.
-Run of 28 September 2026 (7 cuts in 3 sessions, 30 labelled reads, $0.011):
-
-| Label | Reads | Median keep call | Median keep output | Kept at 0.5 |
-| --- | --- | --- | --- | --- |
-| Needed | 11 | 0.26 | 0.12 | 0 |
-| Unused | 19 | 0.31 | 0.15 | 0 |
-
-Jev puts almost every call between 0.1 and 0.3, so at the threshold of 0.5 nearly every tool
-call outside the newest six messages goes; on real sessions 83 to 87% of the characters. Within
-a cut the needed reads ranked below the unused ones. A rewording that names the goal and the
-tool input in the question moved the call question to 0.67 (5 of 11 needed kept, 7 of 19 unused)
-and left the output question at chance; it is not in use. In practice, then, this is "keep all
-text, drop old tool output", which Claude can re-run. The sample is small, and three sessions
-with both labels out of a thousand says the labels need work too.
-
-## sessionkit skills
-
-You probably ask agents for the same work again and again: merge and deploy, make a repository,
-reset a password. Each time the agent works out the steps anew. `sessionkit skills` finds that
-work in your Claude Code sessions, so you can write a skill for it once.
-
-```sh
-sessionkit skills             # the groups most likely to be one recurring task
-sessionkit skills --draft 2   # start Claude Code to write a skill for group 2
-sessionkit skills --measure   # also score random groups, and test joining groups
-```
-
-```text
- 1. 0.96  4 sessions · 3 projects · 4 days · 21 tool calls
-    commands: ssh, gh pr, git fetch, git log, git diff
-    > lankquote-next  deploy
-    > feedback-use-package  ja prima opze doe maar deploy
-```
-
-How it works:
-
-1. **Group, locally.** Every exchange (your request and the shell commands the agent ran for it)
-   becomes a vector: the commands (`gh repo`, `php artisan`; heredocs and quoted scripts are not
-   commands), pairs of commands in a row, and the words of the request. Alike exchanges form a
-   group, and a group counts when it recurs in three sessions on two days. Prompts sent by a
-   program, an SDK run or a message from another agent, do not count. 968 sessions take about
-   one second.
-2. **Judge, with Jev.** One request per group, with your requests beside their commands: is this
-   one recurring task, one subject with different work, or unrelated; and which installed skill
-   (yours, and those of enabled plugins) already covers it.
-3. **Join.** Groups that may be a task (0.5 or more) and ran alike commands go to Jev in pairs:
-   is this the same task? Above 0.6 they become one group.
-4. **Draft.** `--draft n` hands group n of the last run to Claude Code, with the transcript of
-   every exchange, and asks it to propose a skill and to ask before it writes one.
-
-A run costs about $0.002. The requests go to TypeSafe clipped to 300 characters, with the names
-of the commands, not their arguments or output.
-
-**Measured**, 29 September 2026, 968 sessions (`--measure`, $0.002):
-
-| Group | Count | "One recurring task" |
+| Output question | Train | Test |
 | --- | --- | --- |
-| Exchanges drawn at random from four sessions | 10 | at most 0.01 |
-| Real groups, top of the list | 6 | 0.63 to 0.94 |
-| Real groups, the rest | 18 | 0.01 to 0.42 |
+| fast-jev-compaction: "…re-running the tool would not do" | 0.56 – 0.60 | 0.56 |
+| Now: names the input, asks whether the work is still going on | 0.67 | 0.70 |
+| A rule without Jev: the more recent, the more likely | 0.58 | 0.56 |
 
-| Pair | Count | "Same task" |
-| --- | --- | --- |
-| Two halves of one group | 5 | 0.49 to 0.85, median 0.70 |
-| Two different groups | 21 | 0.06 to 0.53 |
+On test the new wording gained 0.14 per cut (95% interval 0.02 to 0.26). Two identical runs
+differ by up to 0.05, because most answers lie close together. fast-jev's wording put almost
+every output below 0.3, so at the threshold of 0.5 nothing was kept; the new one answers around
+0.7, and at its threshold of 0.78 it kept 40% of the outputs that came back and 10% of those that
+did not (test). The call question is fast-jev's: a rewording helped on train and hurt on test.
+A list of the newest calls in the state did not help, and neither did mixing in recency.
 
-The random groups never pass, so the list starts with real work. The labels are by hand, on one
-person's sessions: read the top of the list, not a threshold.
+What stops it: most wrong orders are two files of one task, of which one happened to come back.
+That cannot be told from the conversation, so this label has a ceiling not far above 0.70. A
+better measurement would count the cost: tokens freed against tokens read again.
 
 ## sessionkit measure
 

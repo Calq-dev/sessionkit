@@ -2,6 +2,20 @@
 
 All notable changes to sessionkit, called jev-start before 0.3.0. The format follows [Keep a Changelog](https://keepachangelog.com).
 
+## [0.13.0] - 2026-09-29
+
+### Changed
+
+- **`sessionkit compact` asks about the output differently.** The question names the call's input
+  and asks whether the work on its file or subject still goes on, and an output stays from 0.78.
+  On held-out cuts it ranked outputs that came back above those that did not at 0.70, against
+  0.56 for fast-jev-compaction's wording, which kept no output at all. The requests are no longer
+  the same as fast-jev-compaction's.
+- **`--measure` measures on a dataset.** `--measure build` labels Reads in every stretch between
+  compactions, at any point auto-compaction could strike, by whether the file came back; cuts are
+  split into train and test by session. `--measure run` compacts them and reports the ranking.
+  `SESSIONKIT_COMPACT_WORDING` names a file with other wording to measure.
+
 ## [0.12.0] - 2026-09-29
 
 ### Added

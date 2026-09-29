@@ -40,10 +40,15 @@ would keep, and changes nothing. That sends the conversation to TypeSafe and cos
 Options:
   --verbose   list the decision and both probabilities for every tool call
   --hook      read Claude Code's messages as JSON on stdin and print the plan (for the plugin)
-  --measure [n]  measure the questions on n recent sessions (default 12; costs money)
+  --measure build <file>   collect labelled cuts from every session, split train/test (free)
+  --measure run <file> <train|test|all> [max] [--out rows.json]
+                           measure the questions on those cuts (costs money)
   -h, --help  show this help";
 
-const KEEP_THRESHOLD: f64 = 0.5;
+const KEEP_THRESHOLD: f64 = 0.5; // for the call question
+// The result question answers around 0.7 for most outputs; at 0.78 it kept 40% of the outputs that
+// came back and 10% of those that did not, on held-out cuts.
+const KEEP_RESULT_THRESHOLD: f64 = 0.78;
 const PRESERVE_RECENT_MESSAGES: usize = 6;
 const MAX_STATE_TOKENS: usize = 25_000;
 const MAX_REQUEST_TOKENS: usize = 30_000; // state plus questions, under Jev's 32k request limit
@@ -54,6 +59,38 @@ const CONCURRENCY: usize = 6;
 const INPUT_CHARS: [usize; 3] = [1000, 200, 60];
 const TEXT_HEAD: usize = 400;
 const TEXT_TAIL: usize = 150;
+
+/// The wording of the state and the two questions. The state and the call question are
+/// fast-jev-compaction's, the result question is measured (see below); a measurement can try another from a JSON file named in SESSIONKIT_COMPACT_WORDING, with the keys
+/// context, call and result, where {id}, {tool}, {chars} and {input} (cut to 200 characters)
+/// stand for the call's.
+struct Wording {
+    context: String,
+    call: String,
+    result: String,
+}
+
+static WORDING: LazyLock<Wording> = LazyLock::new(|| {
+    let mut wording = Wording {
+        context: STATE_CONTEXT.into(),
+        call: "Tool call {id} ({tool}) should stay in the history: knowing this call was made, with its input, still matters for what the assistant does next".into(),
+        // Measured against fast-jev's wording ("...re-running the tool would not do"), which put
+        // every Read below 0.3: naming the input and asking about the work still in progress
+        // ranked outputs that came back above those that did not at 0.70 against 0.56 on held-out
+        // cuts (sessionkit compact --measure, 2026-09-29).
+        result: "The output of tool call {id} ({tool}, input {input}, {chars} chars) concerns a file or subject that the assistant is still working on, as the goal and the newest messages show, so the assistant will likely need it again".into(),
+    };
+    let file = std::env::var("SESSIONKIT_COMPACT_WORDING").ok().and_then(|path| std::fs::read_to_string(path).ok()).and_then(|text| js::parse(&text));
+    if let Some(file) = file {
+        for (key, field) in [("context", &mut wording.context), ("call", &mut wording.call), ("result", &mut wording.result)] {
+            if let Some(text) = file.get(key).and_then(Value::as_str) {
+                *field = text.to_string();
+            }
+        }
+
+    }
+    wording
+});
 
 const STATE_CONTEXT: &str = "A coding assistant conversation is being compacted to free context. `history` is the whole conversation so far, oldest first; tool outputs are replaced by a short `result` note and long texts may be abridged. Each question asks whether one tool call, or the full output of that call, still needs to stay in the history verbatim. Whatever is not kept is deleted permanently, but the assistant can always re-run a tool or re-read a file.";
 
@@ -276,7 +313,7 @@ struct Fitted {
 /// calls left out, then runs of old call-only messages folded together.
 fn fit_state(messages: &[Message], calls: &[ToolCall]) -> Result<Fitted> {
     let goal = goal(messages);
-    let state_of = |entries: &[Entry]| json!({"context": STATE_CONTEXT, "goal": goal, "history": entries.iter().map(Entry::json).collect::<Vec<_>>()});
+    let state_of = |entries: &[Entry]| json!({"context": WORDING.context, "goal": goal, "history": entries.iter().map(Entry::json).collect::<Vec<_>>()});
     let base = estimate_tokens(&js::stringify(&state_of(&[])));
     let total = |entries: &[Entry]| base + entries.iter().map(Entry::tokens).sum::<usize>();
 
@@ -373,13 +410,11 @@ fn shrink(messages: &[Message], calls: &[ToolCall], mut entries: Vec<Entry>, mut
 
 /// The two questions about one call: keep the call, keep its output verbatim.
 fn questions_for(call: &ToolCall) -> Map<String, Value> {
+    let fill = |text: &str| text.replace("{id}", &call.id).replace("{tool}", &call.tool).replace("{chars}", &call.result_chars.to_string())
+        .replace("{input}", &input_text(&call.input, 200));
     let mut questions = Map::new();
-    questions.insert(format!("call_{}", call.id), json!({"type": "noul", "instructions": format!(
-        "Tool call {} ({}) should stay in the history: knowing this call was made, with its input, still matters for what the assistant does next",
-        call.id, call.tool)}));
-    questions.insert(format!("result_{}", call.id), json!({"type": "noul", "instructions": format!(
-        "The full output of tool call {} ({}, {} chars) should stay in the history verbatim: the assistant still needs its contents and re-running the tool would not do",
-        call.id, call.tool, call.result_chars)}));
+    questions.insert(format!("call_{}", call.id), json!({"type": "noul", "instructions": fill(&WORDING.call)}));
+    questions.insert(format!("result_{}", call.id), json!({"type": "noul", "instructions": fill(&WORDING.result)}));
     questions
 }
 
@@ -423,7 +458,7 @@ struct Decision {
 fn decide(pinned: bool, keep_call: f64, keep_result: f64) -> Decision {
     let action = if pinned {
         Action::Pinned
-    } else if keep_result >= KEEP_THRESHOLD {
+    } else if keep_result >= KEEP_RESULT_THRESHOLD {
         Action::Keep
     } else if keep_call >= KEEP_THRESHOLD {
         Action::DropResult
@@ -657,40 +692,53 @@ fn joined_text(content: &Value) -> String {
 /// The conversation since the last compaction boundary, as Claude Code hands it to the hook: one message
 /// per transcript entry, so the thinking, text and tool blocks of one response come apart.
 fn read_transcript(path: &PathBuf) -> Result<Vec<Message>> {
+    Ok(read_segments(path)?.pop().unwrap_or_default())
+}
+
+/// Every stretch of the conversation between two compaction boundaries, oldest first: each is a
+/// conversation as the hook would have been handed it at its end.
+fn read_segments(path: &PathBuf) -> Result<Vec<Vec<Message>>> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let entries: Vec<Value> = text.lines().filter_map(js::parse).filter(|e| !js::truthy(e.get("isSidechain"))).collect();
-    let start = entries.iter().rposition(|e| js::str_of(e, "subtype") == "compact_boundary").map_or(0, |i| i + 1);
-    let mut messages: Vec<Message> = Vec::new();
-    for entry in entries[start..].iter().filter(|e| ["user", "assistant"].contains(&js::str_of(e, "type"))) {
-        let mut message = Message { role: js::str_of(entry, "type").to_string(), text: String::new(), uses: Vec::new(), results: Vec::new() };
-        let blocks = match &entry["message"]["content"] {
-            Value::String(text) => vec![json!({"type": "text", "text": text})],
-            Value::Array(blocks) => blocks.clone(),
-            _ => Vec::new(),
-        };
-        let mut texts = Vec::new();
-        for block in blocks {
-            match js::str_of(&block, "type") {
-                "text" => texts.push(js::str_of(&block, "text").to_string()),
-                "tool_use" => message.uses.push(ToolUse {
-                    id: js::str_of(&block, "id").to_string(),
-                    tool: js::str_of(&block, "name").to_string(),
-                    input: block.get("input").cloned().unwrap_or_else(|| json!({})),
-                    text: None,
-                    is_error: false,
-                }),
-                "tool_result" => message.results.push(ToolResult {
-                    id: js::str_of(&block, "tool_use_id").to_string(),
-                    text: joined_text(&block["content"]),
-                    is_error: js::truthy(block.get("is_error")),
-                }),
-                _ => {}
-            }
+    let mut segments = vec![Vec::new()];
+    for entry in &entries {
+        if js::str_of(entry, "subtype") == "compact_boundary" {
+            segments.push(Vec::new());
+        } else if ["user", "assistant"].contains(&js::str_of(entry, "type")) {
+            segments.last_mut().unwrap().push(message_from(entry));
         }
-        message.text = texts.join("\n");
-        messages.push(message);
     }
-    Ok(messages)
+    Ok(segments)
+}
+
+fn message_from(entry: &Value) -> Message {
+    let mut message = Message { role: js::str_of(entry, "type").to_string(), text: String::new(), uses: Vec::new(), results: Vec::new() };
+    let blocks = match &entry["message"]["content"] {
+        Value::String(text) => vec![json!({"type": "text", "text": text})],
+        Value::Array(blocks) => blocks.clone(),
+        _ => Vec::new(),
+    };
+    let mut texts = Vec::new();
+    for block in blocks {
+        match js::str_of(&block, "type") {
+            "text" => texts.push(js::str_of(&block, "text").to_string()),
+            "tool_use" => message.uses.push(ToolUse {
+                id: js::str_of(&block, "id").to_string(),
+                tool: js::str_of(&block, "name").to_string(),
+                input: block.get("input").cloned().unwrap_or_else(|| json!({})),
+                text: None,
+                is_error: false,
+            }),
+            "tool_result" => message.results.push(ToolResult {
+                id: js::str_of(&block, "tool_use_id").to_string(),
+                text: joined_text(&block["content"]),
+                is_error: js::truthy(block.get("is_error")),
+            }),
+            _ => {}
+        }
+    }
+    message.text = texts.join("\n");
+    message
 }
 
 pub fn compact_main(argv: &[String]) -> Result<()> {
@@ -737,12 +785,19 @@ pub fn compact_main(argv: &[String]) -> Result<()> {
 // ---------------------------------------------------------------- measuring
 
 /// What happened to a file after the cut, for a Read before it: edited before it was read again
-/// (its contents were still needed from the context), read again, or never touched again.
+/// (its contents were still needed from the context), read again, touched by another tool (a grep,
+/// a shell command), or never touched again. The first three came back: dropping their output
+/// costs a read later. Dropping an unused output is free.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Label {
     Needed,
     Reread,
+    Touched,
     Unused,
+}
+
+fn came_back(label: Label) -> bool {
+    label != Label::Unused
 }
 
 fn file_of(input: &Value) -> &str {
@@ -751,6 +806,8 @@ fn file_of(input: &Value) -> &str {
 
 fn label(path: &str, after: &[Message]) -> Option<Label> {
     let name = path.rsplit('/').next().unwrap_or(path);
+    // The folder with the name: a bare name like mod.rs or index.ts may be another file.
+    let tail = path.rsplitn(3, '/').take(2).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("/");
     let mut mentioned = false;
     for message in after {
         for tool in &message.uses {
@@ -761,8 +818,12 @@ fn label(path: &str, after: &[Message]) -> Option<Label> {
             if file == path && ["Edit", "Write", "MultiEdit", "NotebookEdit"].contains(&tool.tool.as_str()) {
                 return Some(Label::Needed);
             }
-            if js::stringify(&tool.input).contains(name) {
-                return None; // touched another way (grep, a shell command): no clean label
+            let input = js::stringify(&tool.input);
+            if input.contains(&tail) {
+                return Some(Label::Touched);
+            }
+            if input.contains(name) {
+                return None; // the name, but maybe of another file: no clean label
             }
         }
         mentioned |= message.text.contains(name);
@@ -793,63 +854,157 @@ fn median(values: &mut [f64]) -> String {
     js::fixed(values[values.len() / 2], 2)
 }
 
-/// Cut recent sessions at a prompt in their middle, compact what came before, and compare the
-/// probabilities of Reads whose file was edited later with those whose file never came back.
-fn measure(argv: &[String]) -> Result<()> {
-    let sessions = argv.first().map_or(12.0, |n| js::parse_number(Some(n))) as usize;
-    let mut rows: Vec<(usize, Label, f64, f64)> = Vec::new();
-    let mut cost = 0.0;
-    let mut cuts = 0;
-    for path in session_files(true, 1000)? {
-        if cuts >= sessions {
+/// Cuts in a stretch of conversation, before which a Read came back later and another did not.
+/// Auto-compaction strikes in the middle of a run, so a cut is any user message (a prompt or tool
+/// results) between 5% and 95% of the stretch, spread evenly. Each cut keeps its labelled Reads by
+/// tool use id.
+fn cuts_of(messages: &[Message], per_session: usize) -> Vec<(usize, Vec<(String, Label)>)> {
+    let points: Vec<usize> = (0..messages.len())
+        .filter(|&i| messages[i].role == "user" && i * 20 >= messages.len() && i * 20 <= messages.len() * 19).collect();
+    let step = (points.len() / (per_session * 4).max(1)).max(1);
+    let prompts: Vec<usize> = points.into_iter().step_by(step).collect();
+    let mut cuts = Vec::new();
+    for &cut in &prompts {
+        if cuts.len() >= per_session {
             break;
         }
-        let messages = read_transcript(&path)?;
-        let prompts: Vec<usize> = (0..messages.len())
-            .filter(|&i| messages[i].role == "user" && messages[i].results.is_empty() && !js::trim(&messages[i].text).is_empty())
-            .filter(|&i| i * 10 >= messages.len() * 2 && i * 10 <= messages.len() * 9).collect();
-        let mut taken = 0;
-        for &cut in &prompts {
-            if taken >= 3 || cuts >= sessions {
-                break;
-            }
-            let (before, after) = messages.split_at(cut);
-            let reads: HashMap<&str, Label> = before.iter().flat_map(|m| &m.uses).filter(|u| u.tool == "Read")
-                .filter_map(|u| Some((u.id.as_str(), label(file_of(&u.input), after)?))).collect();
-            let labels: Vec<Label> = reads.values().copied().collect();
-            if !labels.contains(&Label::Needed) || !labels.contains(&Label::Unused) {
-                continue;
-            }
-            let result = compact(before)?;
-            cost += result.tokens / 1e6 * PRICE_PER_MILLION_TOKENS;
-            for (_, use_id, _, d) in &result.decisions {
-                if let (Some(label), false) = (reads.get(use_id.as_str()), d.action == Action::Pinned) {
-                    rows.push((cuts, *label, d.keep_call, d.keep_result));
-                }
-            }
-            eprintln!("cut {cuts}: {} at message {cut} of {}: {} Reads labelled", path.file_name().unwrap().to_string_lossy(), messages.len(), reads.len());
-            taken += 1;
-            cuts += 1;
+        let (before, after) = messages.split_at(cut);
+        // Only Reads compaction may touch: not in the first message or the newest ones.
+        let reads: Vec<(String, Label)> = before.iter().enumerate().filter(|(i, _)| !is_pinned(*i, before.len()))
+            .flat_map(|(_, m)| &m.uses).filter(|u| u.tool == "Read" && labelled_kind(file_of(&u.input)))
+            .filter_map(|u| Some((u.id.clone(), label(file_of(&u.input), after)?))).collect();
+        if reads.iter().any(|r| came_back(r.1)) && reads.iter().any(|r| r.1 == Label::Unused) {
+            cuts.push((cut, reads));
         }
     }
-    println!("{cuts} cuts, {} labelled Reads, ${}\n", rows.len(), js::fixed(cost, 4));
-    println!("{:<8} {:>5} {:>12} {:>14} {:>16}", "label", "n", "median call", "median output", "kept at 0.5");
-    for label in [Label::Needed, Label::Reread, Label::Unused] {
+    cuts
+}
+
+/// A file whose Read says something about need: not an image, which is almost never used again
+/// and would make the measurement easy, and not the output of a background task, which is read
+/// again because it changed.
+fn labelled_kind(path: &str) -> bool {
+    let lower = path.to_lowercase();
+    let image = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".pdf"].iter().any(|ext| lower.ends_with(ext));
+    let task_output = lower.contains("/tasks/") && lower.ends_with(".output");
+    !image && !task_output
+}
+
+fn label_of(name: &str) -> Option<Label> {
+    [Label::Needed, Label::Reread, Label::Touched, Label::Unused].into_iter().find(|label| format!("{label:?}") == name)
+}
+
+/// sessionkit compact --measure build <file>: the labelled cuts of every session, split into train
+/// and test by session, so that cuts of one session never land on both sides. Local and free.
+fn build_dataset(file: &str, per_session: usize) -> Result<()> {
+    let paths = session_files(true, usize::MAX)?;
+    let found = js::pool(&paths, 8, |path, _| {
+        let segments = read_segments(path).unwrap_or_default();
+        let mut cuts = Vec::new();
+        for (segment, messages) in segments.iter().enumerate() {
+            cuts.extend(cuts_of(messages, per_session.saturating_sub(cuts.len())).into_iter().map(|(cut, reads)| (segment, cut, reads)));
+        }
+        cuts
+    });
+    let mut cuts = Vec::new();
+    let mut counts: HashMap<(&str, String), usize> = HashMap::new();
+    for (path, session_cuts) in paths.iter().zip(found) {
+        let session = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+        let split = if u8::from_str_radix(&js::sha256_hex(session.as_bytes())[..2], 16).unwrap_or(0) % 2 == 0 { "train" } else { "test" };
+        for (segment, cut, reads) in session_cuts {
+            for (_, label) in &reads {
+                *counts.entry((split, format!("{label:?}"))).or_default() += 1;
+            }
+            let reads: Map<String, Value> = reads.into_iter().map(|(id, label)| (id, format!("{label:?}").into())).collect();
+            cuts.push(json!({"transcript": path.to_string_lossy(), "session": session, "segment": segment, "cut": cut, "split": split, "reads": reads}));
+        }
+    }
+    for split in ["train", "test"] {
+        let n = cuts.iter().filter(|c| c["split"] == split).count();
+        let label = |name: &str| counts.get(&(split, name.to_string())).copied().unwrap_or(0);
+        println!("{split}: {n} cuts; Reads needed {}, reread {}, touched {}, unused {}", label("Needed"), label("Reread"), label("Touched"), label("Unused"));
+    }
+    std::fs::write(file, js::stringify_pretty(&json!({"cuts": cuts}))).map_err(|e| e.to_string())
+}
+
+/// sessionkit compact --measure run <file> <train|test|all> [max cuts] [--out rows.json]: compact
+/// each cut with the current wording and compare the probabilities of Needed and Unused Reads.
+fn run_dataset(argv: &[String]) -> Result<()> {
+    let file = argv.first().ok_or("--measure run takes a dataset file")?;
+    let split = argv.get(1).map_or("train", String::as_str);
+    let max = argv.get(2).and_then(|n| n.parse().ok()).unwrap_or(usize::MAX);
+    let out = argv.iter().position(|a| a == "--out").and_then(|i| argv.get(i + 1));
+    let data = js::parse(&std::fs::read_to_string(file).map_err(|e| e.to_string())?).ok_or("the dataset is not JSON")?;
+    // At most two cuts of a session, so that one long session does not decide the outcome.
+    let mut per_session: HashMap<String, usize> = HashMap::new();
+    let cuts: Vec<&Value> = data["cuts"].as_array().into_iter().flatten().filter(|c| split == "all" || c["split"] == split)
+        .filter(|c| {
+            let seen = per_session.entry(js::str_of(c, "session").to_string()).or_default();
+            *seen += 1;
+            *seen <= 2
+        })
+        .take(max).collect();
+    if cuts.is_empty() {
+        return Err(format!("no {split} cuts in {file}"));
+    }
+    // One cut at a time: compact() already sends its requests in parallel.
+    let mut rows: Vec<(usize, Label, f64, f64)> = Vec::new();
+    let mut saved = Vec::new();
+    let mut cost = 0.0;
+    for (n, cut) in cuts.iter().enumerate() {
+        let segments = read_segments(&PathBuf::from(js::str_of(cut, "transcript")))?;
+        let Some(messages) = segments.get(cut["segment"].as_u64().unwrap_or(0) as usize) else { continue };
+        let at = cut["cut"].as_u64().unwrap_or(0) as usize;
+        if at > messages.len() {
+            continue; // the transcript changed since the dataset was built
+        }
+        let result = compact(&messages[..at])?;
+        // How far back each call sits, in messages: the free rule to beat is that recent work comes back.
+        let age: HashMap<&str, usize> = messages[..at].iter().enumerate().flat_map(|(i, m)| m.uses.iter().map(move |u| (u.id.as_str(), at - i))).collect();
+        cost += result.tokens / 1e6 * PRICE_PER_MILLION_TOKENS;
+        for (_, use_id, _, d) in &result.decisions {
+            let Some(label) = cut["reads"].get(use_id).and_then(Value::as_str).and_then(label_of) else { continue };
+            if d.action != Action::Pinned {
+                rows.push((n, label, d.keep_call, d.keep_result));
+                saved.push(json!({"cut": n, "use_id": use_id, "label": format!("{label:?}"), "call": d.keep_call, "result": d.keep_result,
+                    "age": age.get(use_id.as_str()).copied().unwrap_or(0)}));
+            }
+        }
+        eprint!("\rcut {} of {}", n + 1, cuts.len());
+    }
+    eprintln!();
+    if let Some(out) = out {
+        std::fs::write(out, js::stringify(&Value::Array(saved))).map_err(|e| e.to_string())?;
+    }
+    println!("{split}: {} cuts, {} labelled Reads, ${}\n", cuts.len(), rows.len(), js::fixed(cost, 4));
+    println!("{:<8} {:>5} {:>12} {:>14} {:>16}", "label", "n", "median call", "median output", "kept");
+    for label in [Label::Needed, Label::Reread, Label::Touched, Label::Unused] {
         let of: Vec<&(usize, Label, f64, f64)> = rows.iter().filter(|r| r.1 == label).collect();
-        let kept = of.iter().filter(|r| r.3 >= KEEP_THRESHOLD || r.2 >= KEEP_THRESHOLD).count();
+        let kept = of.iter().filter(|r| r.3 >= KEEP_RESULT_THRESHOLD || r.2 >= KEEP_THRESHOLD).count();
         println!("{:<8} {:>5} {:>12} {:>14} {:>16}", format!("{label:?}"), of.len(), median(&mut of.iter().map(|r| r.2).collect::<Vec<_>>()),
             median(&mut of.iter().map(|r| r.3).collect::<Vec<_>>()), format!("{kept} of {}", of.len()));
     }
-    // Within each cut: does a needed Read rank above an unused one?
+    // Within each cut: does a Read that came back rank above an unused one? A cut compares Reads
+    // that saw the same state, so the model's level on that cut drops out.
     let (mut call_aucs, mut output_aucs) = (Vec::new(), Vec::new());
-    for cut in 0..cuts {
-        let pick = |label: Label, by: fn(&(usize, Label, f64, f64)) -> f64| rows.iter().filter(|r| r.0 == cut && r.1 == label).map(by).collect::<Vec<_>>();
-        if let Some(a) = auc(&pick(Label::Needed, |r| r.2), &pick(Label::Unused, |r| r.2)) { call_aucs.push(a) }
-        if let Some(a) = auc(&pick(Label::Needed, |r| r.3), &pick(Label::Unused, |r| r.3)) { output_aucs.push(a) }
+    for n in 0..cuts.len() {
+        let pick = |back: bool, by: fn(&(usize, Label, f64, f64)) -> f64| rows.iter().filter(|r| r.0 == n && came_back(r.1) == back).map(by).collect::<Vec<_>>();
+        if let Some(a) = auc(&pick(true, |r| r.2), &pick(false, |r| r.2)) { call_aucs.push(a) }
+        if let Some(a) = auc(&pick(true, |r| r.3), &pick(false, |r| r.3)) { output_aucs.push(a) }
     }
-    println!("\nNeeded above unused, within a cut (0.5 is chance): call median {} over {} cuts, output median {}",
-        median(&mut call_aucs), call_aucs.len(), median(&mut output_aucs));
+    let mean = |v: &[f64]| if v.is_empty() { "—".to_string() } else { js::fixed(v.iter().sum::<f64>() / v.len() as f64, 3) };
+    println!("\nCame back above unused, within a cut (0.5 is chance), over {} cuts: call mean {}, output mean {}",
+        call_aucs.len(), mean(&call_aucs), mean(&output_aucs));
     Ok(())
+}
+
+/// sessionkit compact --measure build|run: the measurement of the two questions.
+fn measure(argv: &[String]) -> Result<()> {
+    match argv.first().map(String::as_str) {
+        Some("build") => build_dataset(argv.get(1).ok_or("--measure build takes a file to write")?, 8),
+        Some("run") => run_dataset(&argv[1..]),
+        _ => Err("use --measure build <file>, or --measure run <file> <train|test|all> [max cuts] [--out rows.json]".into()),
+    }
 }
 
 #[cfg(test)]
@@ -897,7 +1052,8 @@ mod tests {
 
     #[test]
     fn decisions_follow_the_threshold() {
-        assert_eq!(decide(false, 0.9, 0.6).action, Action::Keep);
+        assert_eq!(decide(false, 0.9, 0.8).action, Action::Keep);
+        assert_eq!(decide(false, 0.9, 0.7).action, Action::DropResult); // the result question has its own, higher threshold
         assert_eq!(decide(false, 0.9, 0.2).action, Action::DropResult);
         assert_eq!(decide(false, 0.1, 0.2).action, Action::DropCall);
         assert_eq!(decide(true, 0.0, 0.0).action, Action::Pinned);
