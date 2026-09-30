@@ -54,6 +54,29 @@ pub fn clip(text: &str, max: usize) -> String {
     if len(text) > max { format!("{} […]", head(text, max)) } else { text.to_string() }
 }
 
+/// Cut a text to `max` units and mark the cut, but keep its end too: what a conclusion proposes
+/// sits at the end, where `clip` would drop it. Two thirds of the budget go to the head.
+pub fn clip_middle(text: &str, max: usize) -> String {
+    if len(text) <= max {
+        return text.to_string();
+    }
+    let keep_head = max * 2 / 3;
+    format!("{} […] {}", head(text, keep_head), tail(text, max - keep_head))
+}
+
+/// The last `max` UTF-16 code units of a string. A surrogate pair that the cut would split is
+/// left out whole.
+pub fn tail(text: &str, max: usize) -> &str {
+    let mut units = 0;
+    for (index, c) in text.char_indices().rev() {
+        units += c.len_utf16();
+        if units > max {
+            return &text[index + c.len_utf8()..];
+        }
+    }
+    text
+}
+
 /// JavaScript's .padEnd(width) after .slice(0, width).
 pub fn pad(text: &str, width: usize) -> String {
     let cut = head(text, width);
@@ -511,6 +534,10 @@ mod tests {
         assert_eq!(head("a😀b", 2), "a");
         assert_eq!(head("a😀b", 3), "a😀");
         assert_eq!(clip("abcdef", 3), "abc […]");
+        assert_eq!(tail("a😀b", 2), "b");
+        assert_eq!(tail("a😀b", 3), "😀b");
+        assert_eq!(clip_middle("abcdef", 6), "abcdef");
+        assert_eq!(clip_middle("abcdefghijkl", 6), "abcd […] kl");
         assert_eq!(pad("ab", 4), "ab  ");
         assert_eq!(lpad("ab", 4), "  ab");
     }

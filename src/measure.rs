@@ -105,7 +105,7 @@ fn cut_session(session: &Session, k: usize) -> Session {
 }
 
 fn plant(prompt: &str, answer: &str, timestamp: &str) -> Exchange {
-    Exchange { prompt: prompt.into(), answer: answer.into(), timestamp: timestamp.into(), files: Vec::new(), tool_calls: 0, commands: Vec::new(), automated: false, plant: None }
+    Exchange { prompt: prompt.into(), answer: answer.into(), conclusion: answer.into(), timestamp: timestamp.into(), files: Vec::new(), tool_calls: 0, commands: Vec::new(), automated: false, plant: None }
 }
 
 const RULE_PLANT: (&str, &str) = (

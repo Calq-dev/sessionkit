@@ -2,6 +2,16 @@
 
 All notable changes to sessionkit, called jev-start before 0.3.0. The format follows [Keep a Changelog](https://keepachangelog.com).
 
+## [0.13.1] - 2026-09-30
+
+### Fixed
+
+- **A fresh session no longer forgets a proposal from the last turns.** The conclusion of a turn
+  was the last text the assistant wrote, so a proposal made earlier in the turn, before more tool
+  calls, was lost. It now holds every text of the turn, plus the questions and options of
+  `AskUserQuestion` and the plan of `ExitPlanMode`. A conclusion that is too long for a question
+  to Jev keeps its start and its end instead of only its start, since a proposal sits at the end.
+
 ## [0.13.0] - 2026-09-29
 
 ### Changed
