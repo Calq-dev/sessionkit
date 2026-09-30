@@ -2,6 +2,23 @@
 
 All notable changes to sessionkit, called jev-start before 0.3.0. The format follows [Keep a Changelog](https://keepachangelog.com).
 
+## [0.15.0] - 2026-09-30
+
+### Added
+
+- **The agent reports a /compact.** After a `/compact` that sessionkit did, a short prompt asks the
+  agent to say, in the language of the conversation, that it worked, how many tokens the
+  conversation went from and to, and how to go on. The numbers are Claude Code's own, from the
+  compaction's boundary entry, which the new `hook compacted` waits for. Not after an
+  auto-compaction, nor after a fallback to the summary.
+
+### Fixed
+
+- **After a compaction the cache state counts the compacted context.** The status line and the
+  cold-cache check read the last call before the compaction, so after compacting a cold session
+  of 912K tokens down to 39K the next message was stopped over the cost of writing 912K again.
+  Now a compaction after the last call sets the context to what it left, and the cache to cold.
+
 ## [0.14.0] - 2026-09-30
 
 ### Added

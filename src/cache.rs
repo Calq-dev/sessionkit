@@ -34,15 +34,28 @@ struct LastCall {
     read: f64,
     write: f64,
     ttl: f64,
+    /// A compaction came after the call: nothing is cached, and the context is what it left.
+    compacted: bool,
 }
 
 /// The last API call of the main conversation, and whether this session writes its cache for
 /// one hour or for five minutes. Subagent calls live in other files and are not counted here.
+/// After a compaction the call's context no longer holds: the next call writes what the
+/// compaction left, so that counts, from the time of the compaction.
 fn last_call(transcript: &Path) -> std::io::Result<Option<LastCall>> {
     let text = read_tail(transcript, TAIL_BYTES)?;
     let mut last: Option<LastCall> = None;
+    let mut compaction: Option<(f64, f64)> = None;
     let mut one_hour = false;
     for line in text.split('\n').rev() {
+        if last.is_none() && compaction.is_none() && line.contains("\"compact_boundary\"") {
+            let entry = js::parse(line).filter(|e| !js::truthy(e.get("isSidechain")));
+            let after = entry.as_ref().and_then(|e| e.get("compactMetadata")).map_or(0.0, |m| js::num_of(m, "postTokens"));
+            if let Some(entry) = entry.filter(|_| after > 0.0) {
+                compaction = Some((js::parse_date(js::str_of(&entry, "timestamp")), after));
+            }
+            continue;
+        }
         if !line.contains("\"usage\"") {
             continue;
         }
@@ -61,14 +74,19 @@ fn last_call(transcript: &Path) -> std::io::Result<Option<LastCall>> {
         if last.is_none() {
             let read = js::num_of(usage, "cache_read_input_tokens");
             let write = js::num_of(usage, "cache_creation_input_tokens");
+            let (time, context) = compaction.unwrap_or((
+                js::parse_date(js::str_of(&entry, "timestamp")),
+                js::num_of(usage, "input_tokens") + read + write,
+            ));
             last = Some(LastCall {
-                time: js::parse_date(js::str_of(&entry, "timestamp")),
+                time,
                 model: model.map(str::to_string),
                 fast: usage.get("speed").and_then(Value::as_str) == Some("fast"),
-                context: js::num_of(usage, "input_tokens") + read + write,
-                read,
-                write,
+                context,
+                read: if compaction.is_some() { 0.0 } else { read },
+                write: if compaction.is_some() { context } else { write },
                 ttl: 0.0,
+                compacted: compaction.is_some(),
             });
         }
         if last.is_some() && one_hour {
@@ -99,7 +117,7 @@ pub fn cache_state(transcript: &Path) -> Option<CacheState> {
     let price = price_of(call.model.as_deref());
     let factor = if call.fast { 2.0 } else { 1.0 };
     let write_factor = if call.ttl == ONE_HOUR { 2.0 } else { 1.25 };
-    let left = call.time + call.ttl - js::now();
+    let left = if call.compacted { 0.0 } else { call.time + call.ttl - js::now() };
     Some(CacheState {
         context: call.context,
         model: call.model,
@@ -111,4 +129,38 @@ pub fn cache_state(transcript: &Path) -> Option<CacheState> {
         per_call: price.map(|p| (call.context * read_price(&p) * factor) / 1e6),
         cold_call: price.map(|p| (call.context * p.input * write_factor * factor) / 1e6),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn state_of(name: &str, lines: &[Value]) -> CacheState {
+        let path = std::env::temp_dir().join(format!("sessionkit-cache-{name}-{}.jsonl", std::process::id()));
+        std::fs::write(&path, lines.iter().map(|line| line.to_string() + "\n").collect::<String>()).unwrap();
+        let state = cache_state(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        state
+    }
+
+    fn call(context: f64) -> Value {
+        json!({"type": "assistant", "timestamp": "2026-09-30T09:00:00Z", "message": {"model": "claude-opus-5-5",
+            "usage": {"input_tokens": 10, "cache_read_input_tokens": context - 10.0, "cache_creation_input_tokens": 0}}})
+    }
+
+    #[test]
+    fn the_last_call_sets_the_context() {
+        assert_eq!(state_of("call", &[call(912_000.0)]).context, 912_000.0);
+    }
+
+    #[test]
+    fn a_later_compaction_sets_the_context_and_empties_the_cache() {
+        let boundary = json!({"type": "system", "subtype": "compact_boundary", "timestamp": "2026-09-30T09:53:43Z",
+            "compactMetadata": {"trigger": "manual", "preTokens": 912_000, "postTokens": 39_000}});
+        let state = state_of("compacted", &[call(912_000.0), boundary]);
+        assert_eq!(state.context, 39_000.0);
+        assert!(!state.warm);
+        assert!(state.last_call_cold);
+    }
 }
