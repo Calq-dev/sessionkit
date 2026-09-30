@@ -46,7 +46,7 @@ export const register = (on) => {
     }
     try {
       if (choice === FRESH) {
-        const answer = await sessionkit($, ["cold-choice", "fresh"], input);
+        const answer = await sessionkit($, ["cold-choice", "fresh"], { ...input, route: check.route });
         if (answer.ok) return { drop: "sessionkit: closing this session; your message continues in a fresh one." };
       }
     } catch {

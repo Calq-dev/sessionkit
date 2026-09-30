@@ -268,6 +268,13 @@ pub fn typesafe_key() -> Result<String> {
     key().map(|(key, _)| key)
 }
 
+/// Whether a key is at hand without asking: in the environment or the keychain. A hook must not
+/// raise a 1Password prompt, so it asks Jev only then.
+pub fn key_at_hand() -> bool {
+    KEY.lock().unwrap().is_some() || std::env::var("TYPESAFE_API_KEY").is_ok_and(|key| !js::trim(&key).is_empty())
+        || !read_keychain(KEYCHAIN_SERVICE).is_empty() || !read_keychain(OLD_KEYCHAIN_SERVICE).is_empty()
+}
+
 // ---------------------------------------------------------------- estimating
 
 pub const CHARS_PER_TOKEN: f64 = 3.5; // measured 3.76 on a real run; lower, so the estimate stays an upper bound
@@ -439,7 +446,7 @@ pub fn ask_nouls(state: &Value, questions: &[Value], budget: usize) -> Result<(V
 }
 
 /// One Choice question against a state. Returns the answer with its probabilities.
-fn ask_choice(state: &Value, question: Value) -> Result<(Option<Value>, f64)> {
+pub fn ask_choice(state: &Value, question: Value) -> Result<(Option<Value>, f64)> {
     let mut asked = Map::new();
     asked.insert("type".into(), "choice".into());
     asked.extend(question.as_object().cloned().unwrap_or_default());

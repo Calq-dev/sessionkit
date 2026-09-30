@@ -2,6 +2,21 @@
 
 All notable changes to sessionkit, called jev-start before 0.3.0. The format follows [Keep a Changelog](https://keepachangelog.com).
 
+## [0.14.0] - 2026-09-30
+
+### Added
+
+- **The cold-cache dialog routes new work.** Before it asks, Jev answers the route question of
+  `sessionkit start` with this session as the one candidate. When the message is clearly new
+  work (0.7 or more for a new topic), the question says so, and a fresh session starts from the
+  earlier sessions that fit the message instead of continuing this one. Otherwise, or without a
+  TypeSafe key at hand, the fresh session continues this one as before.
+- **Model routing for subagents, in shadow.** A function hook on `agent.spawn` asks Jev which
+  model and effort level would have been enough for a subagent's task, and logs that beside the
+  model it got in `~/.cache/sessionkit/agent-routes.jsonl`. It changes nothing. The choices are
+  the Agent tool's aliases and effort levels, in Anthropic's own words from its model selection
+  matrix and effort table.
+
 ## [0.13.1] - 2026-09-30
 
 ### Fixed

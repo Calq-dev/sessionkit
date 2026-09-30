@@ -93,6 +93,8 @@ fn terminal_of(pid: i64) -> Result<Option<String>> {
 pub struct Handoff {
     pub session: String,
     pub prompt: String,
+    /// The message is new work rather than a continuation: start from the sessions that fit it.
+    pub search: bool,
 }
 
 /// The handoff for this key, once: the file is removed, and a stale one is ignored.
@@ -108,11 +110,16 @@ pub fn take_handoff(key: &str) -> Option<Handoff> {
     (js::now() - time < HANDOFF_MAX_AGE_MS).then(|| Handoff {
         session: js::str_of(&handoff, "session").to_string(),
         prompt: js::str_of(&handoff, "prompt").to_string(),
+        search: js::truthy(handoff.get("search")),
     })
 }
 
 /// Start the session a handoff asks for: what the owner of the terminal runs.
 pub fn run_handoff(handoff: Handoff) -> Result<()> {
+    if handoff.search {
+        eprint!("\nsessionkit: your message is new work; starting fresh from the sessions that fit it\n");
+        return crate::start::start_main(&[handoff.prompt]);
+    }
     eprint!("\nsessionkit: continuing session {} in a fresh one\n", js::head(&handoff.session, 8));
     crate::start::start_main(&["--session".into(), handoff.session, handoff.prompt])
 }
@@ -157,7 +164,7 @@ pub fn next_main(argv: &[String]) -> Result<()> {
         return Ok(());
     };
     println!("Closing this session; next: {restart}");
-    leave_handoff(&key, &session, &options.prompt);
+    leave_handoff(&key, &session, &options.prompt, false);
     terminate(claude_pid);
     Ok(())
 }
@@ -183,9 +190,9 @@ pub fn handoff_key(claude_pid: i64) -> Result<Option<String>> {
 }
 
 /// Leave the prompt for the owner of the terminal; it acts once Claude Code has exited.
-pub fn leave_handoff(key: &str, session: &str, prompt: &str) {
+pub fn leave_handoff(key: &str, session: &str, prompt: &str, search: bool) {
     let dir = handoff_dir();
     let _ = std::fs::create_dir_all(&dir);
-    let record = json!({"session": session, "prompt": prompt, "time": js::num(js::now())});
+    let record = json!({"session": session, "prompt": prompt, "search": search, "time": js::num(js::now())});
     let _ = std::fs::write(dir.join(format!("{key}.json")), js::stringify(&record));
 }
