@@ -38,7 +38,7 @@ const SKILL: &str = include_str!("SKILL.md");
 const SKILL_NAME: &str = "sessionkit";
 const OLD_SKILL_NAME: &str = "sessionkit-grep";
 
-const PLUGIN_FILES: [(&str, &str); 10] = [
+const PLUGIN_FILES: [(&str, &str); 11] = [
     (".claude-plugin/plugin.json", include_str!("../plugin/.claude-plugin/plugin.json")),
     (".claude-plugin/marketplace.json", include_str!("../plugin/.claude-plugin/marketplace.json")),
     ("hooks/hooks.json", include_str!("../plugin/hooks/hooks.json")),
@@ -49,6 +49,7 @@ const PLUGIN_FILES: [(&str, &str); 10] = [
     ("hooks/prompt.js", include_str!("../plugin/hooks/prompt.js")),
     ("hooks/read.js", include_str!("../plugin/hooks/read.js")),
     ("hooks/repeat.js", include_str!("../plugin/hooks/repeat.js")),
+    ("hooks/waiting.js", include_str!("../plugin/hooks/waiting.js")),
 ];
 const PLUGIN_FOLDER: &str = "sessionkit-plugin";
 const PLUGIN_ID: &str = "sessionkit@sessionkit";

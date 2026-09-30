@@ -158,6 +158,15 @@ apart.
   hook (`hook prompt`) acts alone: where it can it closes the session and continues in a fresh
   one, elsewhere it stops the message once; send it again to go ahead.
 
+- **When a warm session has grown large** (300K tokens by default; `SESSIONKIT_COMPACT_ABOVE`),
+  the dialog asks whether to compact first: every message re-reads the whole context, and it
+  shows the cost per call now and after /compact. A simulation over earlier sessions found that
+  compacting at 300K saves about half of the cache reads, more than acting on a cold cache alone.
+  **Compact first** runs /compact and then sends your message; **Always at 300K** runs Claude
+  Code's own `/autocompact 300000` as well, so it compacts by itself from then on, also in auto
+  mode, where no new message comes in to ask at. It asks once per size, and again only when the
+  context has grown by half; not at all once you set `autoCompactWindow` yourself.
+
 - **After the first large read** (400 lines or more, the whole file): one line in the context
   tells the agent that `sessionkit ask` answers a question about a file without reading it, and
   `--find` names the line to read. Agents read whole files out of habit; a skill alone did not

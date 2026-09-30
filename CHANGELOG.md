@@ -6,6 +6,11 @@ All notable changes to sessionkit, called jev-start before 0.3.0. The format fol
 
 ### Added
 
+- **A large warm session asks to compact first.** Above 300K tokens of context
+  (`SESSIONKIT_COMPACT_ABOVE`), the dialog shows what a call costs now and after /compact.
+  *Compact first* runs /compact and then sends the message; *Always at 300K* also sets Claude
+  Code's `/autocompact`, so it compacts by itself from then on, also in auto mode. Simulated over
+  earlier sessions, compacting at 300K saved about half of the cache reads.
 - **An Edit refused for an unread file is read and tried again.** Claude Code refuses an Edit of
   a file no Read in the session has seen, also when the agent read it with `cat` or `sed`, or
   before a compaction: 98 of 8,635 edits in the transcripts here, after which the agent mostly
