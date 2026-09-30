@@ -2,6 +2,18 @@
 
 All notable changes to sessionkit, called jev-start before 0.3.0. The format follows [Keep a Changelog](https://keepachangelog.com).
 
+## [0.16.0] - 2026-09-30
+
+### Added
+
+- **`sessionkit peers`: hand work to a warm session.** Lists the Claude Code sessions running on
+  this machine, from `~/.claude/sessions`, with status, context, cache read per call and the time
+  the cache stays warm. Given a task, Jev judges per idle, warm session whether its work covers
+  the task (0.7 or more, not yet measured), and the output names the session to send it to with
+  SendMessage. The skill tells the agent to run it before it spawns a subagent.
+- **Warm peers in the shadow log of a subagent.** `hook agent-route` also logs, under
+  `warm_peers`, the idle, warm sessions in the same folder and Jev's fit for the subagent's task.
+
 ## [0.15.0] - 2026-09-30
 
 ### Added

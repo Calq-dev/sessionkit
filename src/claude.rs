@@ -16,6 +16,7 @@
 use crate::Result;
 use crate::cache::{CacheState, FIVE_MINUTES, cache_state, read_tail};
 use crate::js::{self, fixed, num};
+use crate::peers;
 use crate::next::{env_pid, handoff_key, leave_handoff, ps_field, terminate, transcript_of};
 use crate::start::{ROUTE_CONTINUE, Scored, ask_choice, key_at_hand, read_session, route_to_session};
 use crate::usage::{home, price_of, read_price};
@@ -48,11 +49,11 @@ fn read_input() -> Value {
     js::parse(&text).unwrap_or(json!({}))
 }
 
-fn tokens(value: f64) -> String {
+pub fn tokens(value: f64) -> String {
     if value >= 1e6 { format!("{}M", fixed(value / 1e6, 1)) } else { format!("{}K", js::number(js::round(value / 1e3))) }
 }
 
-fn usd(value: f64) -> String {
+pub fn usd(value: f64) -> String {
     if value >= 10.0 {
         format!("${}", fixed(value, 0))
     } else if value >= 1.0 {
@@ -62,7 +63,7 @@ fn usd(value: f64) -> String {
     }
 }
 
-fn minutes(ms: f64) -> String {
+pub fn minutes(ms: f64) -> String {
     if ms >= 3600000.0 {
         format!("{}h{:0>2}", js::number((ms / 3600000.0).floor()), js::number(((ms % 3600000.0) / 60000.0).floor()))
     } else {
@@ -509,6 +510,7 @@ fn agent_route(input: &Value) -> Result<Value> {
         "proposal": {"model": model, "effort": effort},
         "probabilities": {"model": models, "effort": efforts},
         "tokens": num(used_model + used_effort),
+        "warm_peers": peers::shadow(js::str_of(input, "session_id"), js::str_of(input, "prompt")),
     });
     let file = cache_dir().join("agent-routes.jsonl");
     std::fs::create_dir_all(cache_dir()).map_err(|e| e.to_string())?;

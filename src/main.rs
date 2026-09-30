@@ -2,6 +2,7 @@
 //
 //   sessionkit start    start Claude Code, Codex or jcode with what matters from earlier sessions
 //   sessionkit next     inside Claude Code: close a cold session and continue in a fresh one
+//   sessionkit peers    the running sessions, and whether a warm, idle one fits a task
 //   sessionkit usage    where the tokens and the money go in your Claude Code sessions
 //   sessionkit measure  measure whether start selects the right context
 //   sessionkit statusline, sessionkit hook   show in Claude Code what the prompt cache costs
@@ -20,6 +21,7 @@ mod grep;
 mod js;
 mod measure;
 mod next;
+mod peers;
 mod setup;
 mod skills;
 mod start;
@@ -30,6 +32,7 @@ const HELP: &str = "sessionkit — start, measure and analyse agent sessions
 Usage:
   sessionkit start [options] \"prompt\"   start an agent with what matters from earlier sessions
   ! sessionkit next \"prompt\"            inside Claude Code: close a cold session, continue fresh
+  sessionkit peers [--all] [\"task\"]     running sessions; which warm, idle one fits a task (Jev)
   sessionkit usage [options]            where the tokens and the money go (local, free)
   sessionkit measure [options]          measure the selection of start (costs money)
   sessionkit statusline                 Claude Code status line: context, cost per call, cache
@@ -64,6 +67,7 @@ fn main() {
     let result = match command.as_str() {
         "start" => start::start_main(rest),
         "next" => next::next_main(rest),
+        "peers" => peers::peers_main(rest),
         "usage" => usage::usage_main(rest),
         "measure" => measure::measure_main(rest),
         "statusline" => claude::statusline_main(),

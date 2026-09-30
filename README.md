@@ -186,6 +186,33 @@ owners opens the next session:
 
 Without either, the hook stops the message once, and `next` prints the command to run.
 
+### Hand work to a warm session
+
+An idle session whose cache is still warm holds context you already paid for. `sessionkit peers`
+lists the Claude Code sessions running on this machine, from `~/.claude/sessions`, with their
+context, what one call costs in cache reads, and how long the cache stays warm. Given a task,
+Jev judges per idle, warm session whether its work so far covers the task:
+
+```text
+$ sessionkit peers "deploy commit 053cea4 together with ca0b16c"
+Running sessions: status, context, cache read per call, cache left, fit.
+  lmnl-56         idle    654K  $0.131/call  warm 55m  fit 0.80
+  lmnl-2c         idle    235K  $0.047/call      cold
+  lmnl-e8         busy    326K  $0.065/call  warm 59m
+
+lmnl-56 fits. Send it the task with SendMessage to "lmnl-56"; it works in its own terminal, in parallel with you.
+Every call it makes reads its whole context: $0.131 per call. For a long task, ask it for a briefing and give that to a subagent.
+```
+
+The skill tells the agent to run it before it spawns a subagent, so work goes to a session that
+knows it instead of a fresh one that reads its way in. A warm session is not always cheaper:
+every call reads its whole context, so for a long task a briefing from it plus a subagent costs
+less. The fit line of 0.7 is not measured yet. The plugin's `agent.spawn` hook logs, in shadow,
+which warm peers would have fit every subagent, in `~/.cache/sessionkit/agent-routes.jsonl`
+under `warm_peers`. Jev costs about $0.0001 per session judged.
+
+`~/.claude/sessions` is not a public contract of Claude Code; its format can change.
+
 Nothing here reaches Claude's context: the status line, `systemMessage` and the block `reason`
 are shown to you only, so the checks cost no tokens.
 
