@@ -131,7 +131,10 @@ apart.
   ```
 
   **Fresh session** closes this session and continues your message in a fresh one:
-  `sessionkit start --session <this session> "your message"`. **Continue here** sends it. Where
+  `sessionkit start --session <this session> "your message"`. When Jev finds the message clearly
+  new work rather than a continuation (the route question of `start`, 0.7 or more for a new
+  topic), the question says so, and the fresh session starts from the earlier sessions that fit
+  the message instead: `sessionkit start "your message"`. **Continue here** sends it. Where
   nothing can open a fresh session (see below), the choice is **Continue here** or **Stop**; Stop,
   or closing the dialog, puts your message back in the prompt box. The dialog is the engine's,
   so asking costs no model call. It comes from the plugin that `setup` installs, a function hook
@@ -146,6 +149,16 @@ apart.
   through Jev, with ask-jev as MCP tools as well as with the skill. Once per session and per
   subagent, so it costs a few hundred tokens; the read itself goes ahead unchanged. A function
   hook on `tool.call` in the plugin, like the dialog above.
+
+- **When a subagent starts**, in shadow: Jev says which model and effort level would have been
+  enough for its task, and `hook agent-route` logs that beside the model it got, in
+  `~/.cache/sessionkit/agent-routes.jsonl`. Nothing changes the spawn, and it does not wait. The
+  choices are the Agent tool's model aliases (haiku, sonnet, opus, fable) and effort levels,
+  described in Anthropic's own words from its model selection matrix and effort table; no hook
+  can list them, so a new model needs a line in the code. Two Jev questions per subagent, about a
+  twentieth of a cent. The log is for a measurement before any routing is switched on. A
+  function hook on `agent.spawn`; without a TypeSafe key in the environment or the keychain it
+  logs nothing, since a hook must not raise a 1Password prompt.
 
 ### Continue in a fresh session from inside Claude Code
 

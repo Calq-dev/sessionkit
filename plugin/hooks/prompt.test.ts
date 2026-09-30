@@ -12,10 +12,11 @@ const COLD = {
 
 /** Stand-ins for the world beneath the plugin; returns what each was asked. */
 function world(on, check, answer) {
-  const seen = { runs: [], asked: [], filled: [], entered: [] };
+  const seen = { runs: [], inputs: [], asked: [], filled: [], entered: [] };
   on("session.id", () => ({ value: "session-1" }));
   on("process.run", (_$, e) => {
     seen.runs.push(e.argv.slice(2).join(" "));
+    seen.inputs.push(JSON.parse(e.init.stdin));
     const out = e.argv[2] === "cold-check" ? check : { ok: true };
     return { value: { exitCode: 0, stdout: JSON.stringify(out), stderr: "" } };
   });
@@ -60,6 +61,12 @@ test("a fresh session hands the message over and keeps it out of this one", asyn
   expect(seen.runs).toEqual(["cold-check", "cold-choice fresh"]);
   expect(seen.entered).toEqual([]);
   expect(result.drop).toContain("fresh one");
+});
+
+test("the route cold-check chose goes with the fresh choice", async ($, on) => {
+  const seen = world(on, { ...COLD, route: "search" }, "Fresh session");
+  await $.prompt.submit(typed("something new"));
+  expect(seen.inputs[1]).toEqual({ session_id: "session-1", prompt: "something new", route: "search" });
 });
 
 test("without a way to open a fresh session, stop puts the message back", async ($, on) => {

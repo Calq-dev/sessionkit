@@ -17,8 +17,9 @@ use crate::Result;
 use crate::cache::{CacheState, FIVE_MINUTES, cache_state};
 use crate::js::{self, fixed, num};
 use crate::next::{env_pid, handoff_key, leave_handoff, ps_field, terminate, transcript_of};
+use crate::start::{ROUTE_CONTINUE, Scored, ask_choice, key_at_hand, read_session, route_to_session};
 use crate::usage::{home, price_of, read_price};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
@@ -329,7 +330,7 @@ fn prompt(input: &Value) -> Result<Option<(Value, Option<i64>)>> {
         _ => None,
     };
     if let Some(key) = key {
-        leave_handoff(&key, &id, text);
+        leave_handoff(&key, &id, text, false);
         return Ok(Some((json!({
             "decision": "block",
             "reason": format!("sessionkit: the prompt cache of this session has expired. This message would write \
@@ -368,9 +369,26 @@ fn session_input(input: &Value) -> Value {
     json!({"session_id": id, "transcript_path": path})
 }
 
+/// Whether a message to a cold session is new work rather than a continuation: the route question
+/// of sessionkit start, with this session as the one candidate. Only a clear new topic counts; when
+/// Jev cannot be asked, the fresh session continues this one, as before.
+fn is_new_work(transcript: &str, prompt: &str) -> bool {
+    if js::trim(prompt).is_empty() || transcript.is_empty() || !key_at_hand() {
+        return false;
+    }
+    let Ok(session) = read_session(Path::new(transcript)) else { return false };
+    if session.exchanges.is_empty() {
+        return false;
+    }
+    let candidate = Scored { session, relevance: 1.0, continues: None };
+    route_to_session(prompt, &[candidate], false).is_ok_and(|route| route.session.is_none() && route.probability >= ROUTE_CONTINUE)
+}
+
 /// For the plugin's prompt.submit hook: is this session cold and expensive, and can a fresh
-/// session be opened in this terminal? The dialog's question comes from here.
+/// session be opened in this terminal? The dialog's question comes from here, and the route of
+/// the fresh session: continue this one, or, for new work, start from the sessions that fit it.
 fn cold_check(input: &Value) -> Result<Value> {
+    let prompt = js::str_of(input, "prompt");
     let input = session_input(input);
     let id = session_id(&input);
     let Some(state) = cold_state(&input).filter(|state| !acked(&id, state)) else { return Ok(json!({"cold": false})) };
@@ -378,16 +396,19 @@ fn cold_check(input: &Value) -> Result<Value> {
         Some(pid) => handoff_key(pid)?.is_some(),
         None => false,
     };
+    let search = fresh && is_new_work(js::str_of(&input, "transcript_path"), prompt);
     let cost = usd(state.cold_call.unwrap_or(f64::NAN));
     let restart = format!("sessionkit start --session {} \"your prompt\"", js::head(&id, 8));
     Ok(json!({
         "cold": true,
         "cost": cost,
         "fresh": fresh,
+        "route": if search { "search" } else { "session" },
         "question": format!("The prompt cache of this session has expired. This message writes {} tokens to the \
             cache again: about {cost}, and every later message re-reads them ({} each). {}", tokens(state.context),
             usd(state.per_call.unwrap_or(f64::NAN)),
-            if fresh { "A fresh session starts with only what matters for this message. Where do you go on?" }
+            if search { "This message looks like new work: a fresh session starts from the earlier sessions that fit it. Where do you go on?" }
+            else if fresh { "A fresh session starts with only what matters for this message. Where do you go on?" }
             else { "Go on here, or stop and start fresh yourself?" }),
         "stop": format!("sessionkit: your message is back in the prompt box. To start fresh, exit and run: {restart}"),
     }))
@@ -413,11 +434,87 @@ fn cold_choice(choice: Option<&str>, input: &Value) -> Result<(Value, Option<i64
             let Some((key, pid)) = key else {
                 return Ok((json!({"ok": false, "reason": "nothing in this terminal can open the next session"}), None));
             };
-            leave_handoff(&key, &id, js::str_of(input, "prompt"));
+            leave_handoff(&key, &id, js::str_of(input, "prompt"), js::str_of(input, "route") == "search");
             Ok((json!({"ok": true}), Some(pid)))
         }
         _ => Err("hook cold-choice takes continue or fresh.".into()),
     }
+}
+
+/// The models Claude Code offers a subagent, by the aliases of the Agent tool's `model` parameter,
+/// each in Anthropic's own words: the "When you need..." and example columns of the model
+/// selection matrix in https://platform.claude.com/docs/en/about-claude/models/choosing-a-model
+/// (read 2026-09-30). No hook can list them, so a new model or alias needs a line here.
+const AGENT_MODELS: [(&str, &str); 4] = [
+    ("haiku", "Claude Haiku 4.5. The lowest latency and price, with extended thinking. Real-time applications, \
+        high-volume intelligent processing, cost-sensitive deployments needing strong reasoning, sub-agent tasks."),
+    ("sonnet", "Claude Sonnet 5.5. Speed and capability for everyday coding, agent, and enterprise workloads. Code \
+        generation, data analysis, content creation, visual understanding, agentic tool use."),
+    ("opus", "Claude Opus 5.5. Complex agentic coding and enterprise work. Multihour autonomous coding agents, \
+        large-scale refactoring, complex systems engineering, vision-heavy workflows, computer use."),
+    ("fable", "Claude Fable 5.1. The highest available capability. Agent sessions that run for hours, multistep \
+        deep research, analysis carried through to a finished document, spreadsheet, or deck."),
+];
+
+/// The effort levels Claude Code offers, in the words of the effort table in
+/// https://platform.claude.com/docs/en/build-with-claude/effort (read 2026-09-30). Claude Haiku 4.5
+/// takes no effort level.
+const AGENT_EFFORTS: [(&str, &str); 5] = [
+    ("low", "Most efficient. Significant token savings with some capability reduction. Simpler tasks that need \
+        the best speed and lowest costs, such as subagents."),
+    ("medium", "Balanced approach with moderate token savings. Agentic tasks that require a balance of speed, \
+        cost, and performance."),
+    ("high", "Spends as many tokens as the task needs for excellent results. Complex reasoning, difficult coding \
+        problems, agentic tasks."),
+    ("xhigh", "Extended capability for long-horizon work. Long-running agentic and coding tasks (over 30 \
+        minutes) with token budgets in the millions."),
+    ("max", "Absolute maximum capability with no constraints on token spending. Tasks requiring the deepest \
+        possible reasoning and most thorough analysis."),
+];
+
+fn criteria(options: &[(&str, &str)]) -> Map<String, Value> {
+    options.iter().map(|(name, words)| (name.to_string(), json!(js::collapse_space(words)))).collect()
+}
+
+/// For the plugin's agent.spawn hook, in shadow: the model and effort Jev would have given a
+/// subagent, logged beside the model it got. Nothing changes the spawn; the log is for a later
+/// measurement.
+fn agent_route(input: &Value) -> Result<Value> {
+    if !key_at_hand() {
+        return Ok(json!({"ok": false, "reason": "no TypeSafe key at hand"}));
+    }
+    let state = json!({"task": {
+        "description": js::str_of(input, "description"),
+        "agent_type": js::str_of(input, "agent_type"),
+        "prompt": js::clip(js::str_of(input, "prompt"), 6000),
+    }});
+    let ask = |instructions: &str, options: &[(&str, &str)]| -> Result<(String, Value, f64)> {
+        let (answer, used) = ask_choice(&state, json!({"instructions": instructions, "criteria": criteria(options)}))?;
+        let choice = answer.as_ref().map_or("", |a| js::str_of(a, "choice")).to_string();
+        Ok((choice, answer.and_then(|a| a.get("probabilities").cloned()).unwrap_or(Value::Null), used))
+    };
+    let (model, models, used_model) = ask("Which is the cheapest model that will do `task` well? `task.prompt` is everything \
+        the subagent is told. A cheaper model that has to guess, or misses a subtle point, costs more later.", &AGENT_MODELS)?;
+    let (effort, efforts, used_effort) = ask("Which is the lowest effort level at which the subagent will do `task` well? \
+        `task.prompt` is everything the subagent is told.", &AGENT_EFFORTS)?;
+    let record = json!({
+        "time": num(js::now()),
+        "session_id": js::str_of(input, "session_id"),
+        "agent_id": js::str_of(input, "agent_id"),
+        "agent_type": js::str_of(input, "agent_type"),
+        "description": js::str_of(input, "description"),
+        "model": js::str_of(input, "model"),
+        "requested": input.get("requested").cloned().unwrap_or(Value::Null),
+        "parent_model": js::str_of(input, "parent_model"),
+        "proposal": {"model": model, "effort": effort},
+        "probabilities": {"model": models, "effort": efforts},
+        "tokens": num(used_model + used_effort),
+    });
+    let file = cache_dir().join("agent-routes.jsonl");
+    std::fs::create_dir_all(cache_dir()).map_err(|e| e.to_string())?;
+    let mut log = std::fs::OpenOptions::new().create(true).append(true).open(&file).map_err(|e| e.to_string())?;
+    writeln!(log, "{}", js::stringify(&record)).map_err(|e| e.to_string())?;
+    Ok(json!({"ok": true, "proposal": {"model": model, "effort": effort}}))
 }
 
 pub fn hook_main(argv: &[String]) -> Result<()> {
@@ -426,6 +523,10 @@ pub fn hook_main(argv: &[String]) -> Result<()> {
     match argv.first().map(String::as_str) {
         Some("cold-check") => {
             println!("{}", js::stringify(&cold_check(&input)?));
+            return Ok(());
+        }
+        Some("agent-route") => {
+            println!("{}", js::stringify(&agent_route(&input)?));
             return Ok(());
         }
         Some("cold-choice") => {
@@ -456,3 +557,4 @@ pub fn hook_main(argv: &[String]) -> Result<()> {
     }
     Ok(())
 }
+
