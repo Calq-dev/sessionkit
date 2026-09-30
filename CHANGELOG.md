@@ -2,6 +2,13 @@
 
 All notable changes to sessionkit, called jev-start before 0.3.0. The format follows [Keep a Changelog](https://keepachangelog.com).
 
+## [Unreleased]
+
+### Fixed
+
+- **`setup` names everything the plugin does.** It listed three of its hooks; now one line per
+  hook and the output style, and the plugin's own description says the same.
+
 ## [0.16.0] - 2026-09-30
 
 ### Added
