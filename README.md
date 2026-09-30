@@ -280,8 +280,10 @@ under `warm_peers`. Jev costs about $0.0001 per session judged.
 
 `~/.claude/sessions` is not a public contract of Claude Code; its format can change.
 
-Nothing here reaches Claude's context: the status line, `systemMessage` and the block `reason`
-are shown to you only, so the checks cost no tokens.
+The status line, `systemMessage` and the block `reason` are shown to you only, so the checks
+cost no tokens. One line does reach Claude's context: the note on what calls cost, above. Names
+of other sessions in it are cut to letters, digits and `._-`, since any process of yours can
+write the files they come from.
 
 `sessionkit setup` writes the status line and the hooks into `~/.claude/settings.json`, with the path where
 sessionkit is installed on your machine. A Claude Code plugin can ship hooks but not a status
