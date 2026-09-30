@@ -650,7 +650,12 @@ fn hook() -> Result<()> {
         }
         Ok(result) => {
             let kept = result.plan.len();
-            json!({"plan": result.plan, "summary": format!("kept {kept}/{} messages, no summary ({})", result.messages_before, result.summary())})
+            let [pinned, kept_calls, cut, dropped] = result.counts;
+            json!({
+                "plan": result.plan,
+                "summary": format!("kept {kept}/{} messages, no summary ({})", result.messages_before, result.summary()),
+                "counts": {"pinned": pinned, "kept": kept_calls, "cut": cut, "dropped": dropped},
+            })
         }
     };
     println!("{}", js::stringify(&answer));

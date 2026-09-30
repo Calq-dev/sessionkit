@@ -431,6 +431,11 @@ those of fast-jev-compaction 0.3.0; the question about the output is measured an
 `session.compact`: `/compact`, auto-compaction and Claude Code's precomputed compaction all go
 through `sessionkit compact --hook`. When that fails, or frees less than a quarter of the
 characters, Claude Code writes its own summary as before. A toast says which happened.
+After a `/compact` that sessionkit did, the agent says so itself: a short prompt asks it to tell
+you, in the language of the conversation, how many tokens the conversation went from and to (as
+Claude Code measured them), and to propose how to go on. That costs one model call; the cache
+write it makes, your next message would make anyway. After an auto-compaction the agent just
+goes on with its work.
 
 ```sh
 sessionkit compact last               # what a compaction now would keep; changes nothing

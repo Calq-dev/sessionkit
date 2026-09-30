@@ -14,7 +14,7 @@
 // is added to Claude's context, so the checks cost no tokens.
 
 use crate::Result;
-use crate::cache::{CacheState, FIVE_MINUTES, cache_state};
+use crate::cache::{CacheState, FIVE_MINUTES, cache_state, read_tail};
 use crate::js::{self, fixed, num};
 use crate::next::{env_pid, handoff_key, leave_handoff, ps_field, terminate, transcript_of};
 use crate::start::{ROUTE_CONTINUE, Scored, ask_choice, key_at_hand, read_session, route_to_session};
@@ -517,12 +517,41 @@ fn agent_route(input: &Value) -> Result<Value> {
     Ok(json!({"ok": true, "proposal": {"model": model, "effort": effort}}))
 }
 
+const COMPACTED_WAIT_MS: u64 = 10_000;
+
+/// For the plugin, once its compaction is in: the tokens before and after, as Claude Code
+/// measured them in the compaction's boundary entry. Waits for that entry, written after the hook
+/// answers, and takes only one from `since` (milliseconds) on.
+fn compacted(input: &Value) -> Result<Value> {
+    let path = transcript_of(js::str_of(input, "session_id")).ok_or("no transcript for this session")?;
+    let since = js::num_of(input, "since");
+    let started = std::time::Instant::now();
+    loop {
+        // The kept messages are written again after the boundary, so it can sit megabytes from the end.
+        let text = read_tail(&path, 32 * 1024 * 1024).map_err(|e| e.to_string())?;
+        let boundary = text.split('\n').rev().filter(|line| line.contains("\"compact_boundary\""))
+            .filter_map(js::parse).find(|e| !js::truthy(e.get("isSidechain")));
+        if let Some(entry) = boundary.filter(|e| js::parse_date(js::str_of(e, "timestamp")) >= since) {
+            let metadata = entry.get("compactMetadata").cloned().unwrap_or(Value::Null);
+            return Ok(json!({"found": true, "before": js::num_of(&metadata, "preTokens"), "after": js::num_of(&metadata, "postTokens")}));
+        }
+        if started.elapsed().as_millis() as u64 >= COMPACTED_WAIT_MS {
+            return Ok(json!({"found": false}));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+}
+
 pub fn hook_main(argv: &[String]) -> Result<()> {
     let input = read_input();
     // The plugin reads these answers; an error goes to stderr, and the plugin lets the message through.
     match argv.first().map(String::as_str) {
         Some("cold-check") => {
             println!("{}", js::stringify(&cold_check(&input)?));
+            return Ok(());
+        }
+        Some("compacted") => {
+            println!("{}", js::stringify(&compacted(&input)?));
             return Ok(());
         }
         Some("agent-route") => {
