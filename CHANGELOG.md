@@ -2,7 +2,7 @@
 
 All notable changes to sessionkit, called jev-start before 0.3.0. The format follows [Keep a Changelog](https://keepachangelog.com).
 
-## [Unreleased]
+## [0.16.1] - 2026-09-30
 
 ### Added
 
