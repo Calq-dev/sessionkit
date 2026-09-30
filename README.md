@@ -167,6 +167,14 @@ apart.
   mode, where no new message comes in to ask at. It asks once per size, and again only when the
   context has grown by half; not at all once you set `autoCompactWindow` yourself.
 
+- **An output style to pick, if you like it**: `/output-style sessionkit-robot`. Terse and
+  neutral, with no personality, and after a tool call that taught it something the agent writes
+  one `Noted:` line with the exact paths, names, error lines and decisions. A compaction without
+  summary keeps all text, so those facts survive it while the tool output goes. Measured on the
+  transcripts here: of the facts an agent used after a possible compaction, 8.5% were in its own
+  text, 51% in a tool input that stays, and 41% only in tool output that would go. Not forced:
+  sessionkit works the same with any style.
+
 - **After the first large read** (400 lines or more, the whole file): one line in the context
   tells the agent that `sessionkit ask` answers a question about a file without reading it, and
   `--find` names the line to read. Agents read whole files out of habit; a skill alone did not
