@@ -158,6 +158,12 @@ apart.
   hook (`hook prompt`) acts alone: where it can it closes the session and continues in a fresh
   one, elsewhere it stops the message once; send it again to go ahead.
 
+- **With each message, a line on what calls cost**: above 50K tokens of context
+  (`SESSIONKIT_COST_NOTE_ABOVE`), the prompt hook adds one line to the agent's context: how
+  large its context is and what each of its calls costs, and the same for up to three other
+  sessions running in this folder, with whether they are idle and warm. Facts only, no advice;
+  about 50 tokens a message.
+
 - **When a warm session has grown large** (300K tokens by default; `SESSIONKIT_COMPACT_ABOVE`),
   the dialog asks whether to compact first: every message re-reads the whole context, and it
   shows the cost per call now and after /compact. A simulation over earlier sessions found that
@@ -274,8 +280,10 @@ under `warm_peers`. Jev costs about $0.0001 per session judged.
 
 `~/.claude/sessions` is not a public contract of Claude Code; its format can change.
 
-Nothing here reaches Claude's context: the status line, `systemMessage` and the block `reason`
-are shown to you only, so the checks cost no tokens.
+The status line, `systemMessage` and the block `reason` are shown to you only, so the checks
+cost no tokens. One line does reach Claude's context: the note on what calls cost, above. Names
+of other sessions in it are cut to letters, digits and `._-`, since any process of yours can
+write the files they come from.
 
 `sessionkit setup` writes the status line and the hooks into `~/.claude/settings.json`, with the path where
 sessionkit is installed on your machine. A Claude Code plugin can ship hooks but not a status

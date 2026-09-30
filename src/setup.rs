@@ -52,6 +52,18 @@ const PLUGIN_FILES: [(&str, &str); 12] = [
     ("hooks/waiting.js", include_str!("../plugin/hooks/waiting.js")),
     ("output-styles/robot.md", include_str!("../plugin/output-styles/robot.md")),
 ];
+/// What the plugin does, one line per hook or file, for the output of setup.
+const PLUGIN_FEATURES: [&str; 8] = [
+    "/compact and auto-compaction go through sessionkit compact, without a summary",
+    "before a message to a cold session, a dialog asks: continue here, or in a fresh session",
+    "before a message to a warm session above 300K, a dialog offers to compact first, or always at 300K",
+    "an Edit refused because the file was not read is read and tried again, without the text in the context",
+    "a teammate's idle notification that repeats its report gets a one-line result",
+    "after the first large read, a tip that sessionkit ask answers without reading; outline first as an option in /config",
+    "per subagent, in shadow: the model and effort Jev would give it, and which warm session would fit",
+    "the output style sessionkit-robot, to pick with /output-style sessionkit-robot",
+];
+
 const PLUGIN_FOLDER: &str = "sessionkit-plugin";
 const PLUGIN_ID: &str = "sessionkit@sessionkit";
 const MARKETPLACE: &str = "sessionkit";
@@ -374,9 +386,8 @@ fn install_plugin(options: &Options, settings: &Value) -> Result<()> {
         claude(&["plugin", "marketplace", "add", &folder.to_string_lossy()]).and_then(|_| claude(&["plugin", "install", PLUGIN_ID, "--scope", "user"]))
     };
     match installed {
-        Ok(()) => println!("sessionkit setup: {}\n  - plugin: /compact and auto-compaction go through sessionkit compact, without a summary\n  \
-            - plugin: before a message to a cold session, a dialog asks: continue here, or in a fresh session\n  \
-            - plugin: after the first large read, a tip that sessionkit ask answers without reading", folder.display()),
+        Ok(()) => println!("sessionkit setup: {}\n{}", folder.display(),
+            PLUGIN_FEATURES.iter().map(|line| format!("  - plugin: {line}")).collect::<Vec<_>>().join("\n")),
         Err(error) => println!("sessionkit setup: {}\n  - plugin written, not installed: {error}", folder.display()),
     }
     let fast_jev = settings.get("enabledPlugins").and_then(Value::as_object).into_iter().flatten()

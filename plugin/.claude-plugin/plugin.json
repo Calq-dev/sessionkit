@@ -1,7 +1,7 @@
 {
   "name": "sessionkit",
   "version": "__VERSION__",
-  "description": "Compaction without a summary: Jev decides which tool outputs are still needed, all text stays verbatim.",
+  "description": "sessionkit in Claude Code: compaction without a summary, the cold-cache and large-context dialogs, the edit retry, and the robot output style.",
   "license": "MIT",
   "userConfig": {
     "readOutline": {

@@ -1,6 +1,6 @@
 [package]
 name = "sessionkit"
-version = "0.16.0"
+version = "0.16.1"
 edition = "2024"
 description = "Start, measure and analyse agent sessions: resume with only the context that matters, see where tokens and money go."
 publish = false

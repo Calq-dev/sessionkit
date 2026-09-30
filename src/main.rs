@@ -40,8 +40,8 @@ Usage:
   sessionkit statusline                 Claude Code status line: context, cost per call, cache
   sessionkit hook session-start|prompt  Claude Code hooks: warn on a costly resume or cold message
   sessionkit setup [--remove]           install the status line and hooks in Claude Code
-  sessionkit grep \"question\" [root]     find code by asking what it does (Jev, costs money)
-  sessionkit ask <file> \"question\"      ask about a file instead of reading it (Jev, costs money)
+  sessionkit grep \"question\" [root]     find code by asking what it does (Jev, about $0.0005 a file)
+  sessionkit ask <file> \"question\"      ask about a file instead of reading it (Jev, about $0.0005 a file)
   sessionkit compact <session>          what a compaction without summary would keep (Jev)
   sessionkit trim --measure [n]         measure cutting large tool results to the task (Jev)
   sessionkit skills [--draft n]         find work you repeat, where a skill would help (Jev)

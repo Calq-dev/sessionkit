@@ -2,6 +2,20 @@
 
 All notable changes to sessionkit, called jev-start before 0.3.0. The format follows [Keep a Changelog](https://keepachangelog.com).
 
+## [0.16.1] - 2026-09-30
+
+### Added
+
+- **Agents see what their calls cost.** Above 50K tokens of context (`SESSIONKIT_COST_NOTE_ABOVE`),
+  each message brings one line into the agent's context: its context size and cost per call, and
+  those of up to three other sessions running in this folder. Facts only. The help and the skill
+  now give Jev's price, about $0.0005 a file, instead of "costs money".
+
+### Fixed
+
+- **`setup` names everything the plugin does.** It listed three of its hooks; now one line per
+  hook and the output style, and the plugin's own description says the same.
+
 ## [0.16.0] - 2026-09-30
 
 ### Added
