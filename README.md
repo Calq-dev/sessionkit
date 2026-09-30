@@ -62,6 +62,7 @@ sessionkit usage                     # everything
 sessionkit usage --days 7            # the last week
 sessionkit usage --project lankquote # one project
 sessionkit usage --json              # the numbers as JSON
+sessionkit usage --tools             # which tools fill the context
 ```
 
 It reads the transcripts under `~/.claude/projects`, main sessions and the subagents stored
@@ -77,6 +78,21 @@ used. A model without a known price is named, and its tokens are left out of the
 Claude Code's own `cost-state` per session is not used. It counts per process, so a resumed
 session starts again at zero; compared with the transcripts it came out both too low and too
 high.
+
+**`--tools`** shows which tools fill the context. Per tool: how many results, their size in
+tokens (the text, at 4 characters a token; images are left out), the part that came in results
+above 10k and 20k characters, and **re-read**: each result times the API calls after it, up to
+the next compaction. Every such call reads the result again from the cache, so re-read is where
+the cache reads go. MCP tools appear by their server's name. The output holds only tool names and
+numbers, so you can share it as it is.
+
+```text
+tool                      results   tokens  share    avg  >10k  >20k   re-read
+------------------------------------------------------------------------------
+Bash                       17,093     8.2M    60%    481   30%   10%       75%
+Read                        2,986     4.0M    29%     1K   67%   49%       15%
+mcp: playwright             2,068     341K     2%    165    9%    4%        3%
+```
 
 **Cold cache rebuilds** are a heuristic: a call after a pause of more than 5 minutes that
 writes at least 20k tokens to the cache and reads less than it writes.

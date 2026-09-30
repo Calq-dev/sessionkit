@@ -13,6 +13,10 @@ All notable changes to sessionkit, called jev-start before 0.3.0. The format fol
   SendMessage. The skill tells the agent to run it before it spawns a subagent.
 - **Warm peers in the shadow log of a subagent.** `hook agent-route` also logs, under
   `warm_peers`, the idle, warm sessions in the same folder and Jev's fit for the subagent's task.
+- **`sessionkit usage --tools`: which tools fill the context.** Per tool the number and size of
+  its results, the part in results above 10k and 20k characters, and how often later calls read
+  them again from the cache, up to the next compaction. Only tool names and numbers, so the
+  output can be shared; it decides what sessionkit trims next.
 
 ## [0.15.0] - 2026-09-30
 

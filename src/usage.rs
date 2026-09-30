@@ -68,6 +68,8 @@ Options:
   --days <n>        only API calls from the last n days (default: all)
   --project <text>  only projects whose folder contains this text
   --top <n>         rows per table (default 10)
+  --tools           which tools fill the context: the size of their results, and how often
+                    later calls read them again from the cache
   --json            print the numbers as JSON
   -h, --help        show this help";
 
@@ -76,10 +78,11 @@ struct Options {
     project: String,
     top: usize,
     json: bool,
+    tools: bool,
 }
 
 fn parse_arguments(argv: &[String]) -> Options {
-    let mut options = Options { days: f64::NAN, project: String::new(), top: 10, json: false };
+    let mut options = Options { days: f64::NAN, project: String::new(), top: 10, json: false, tools: false };
     let mut i = 0;
     while i < argv.len() {
         match argv[i].as_str() {
@@ -97,6 +100,7 @@ fn parse_arguments(argv: &[String]) -> Options {
                 options.top = if js::truthy_number(top) { top.max(1.0) as usize } else { 10 };
             }
             "--json" => options.json = true,
+            "--tools" => options.tools = true,
             "-h" | "--help" => {
                 println!("{USAGE}");
                 std::process::exit(0);
@@ -641,6 +645,168 @@ fn render(report: &Report, options: &Options) -> String {
     out.join("\n")
 }
 
+// ---------------------------------------------------------------- tool results
+
+const TOOL_BUCKETS: [f64; 2] = [10000.0, 20000.0]; // characters of one result
+const CHARS_PER_TOKEN: f64 = 4.0;
+
+/// A tool by the name a person knows: an MCP tool by its server.
+fn tool_label(name: &str) -> String {
+    match name.strip_prefix("mcp__") {
+        Some(rest) => format!("mcp: {}", rest.split("__").next().unwrap_or(rest)),
+        None => name.to_string(),
+    }
+}
+
+/// The characters of a tool result as the model reads it: its text, not its images.
+fn result_chars(content: Option<&Value>) -> f64 {
+    match content {
+        Some(Value::String(text)) => js::len(text) as f64,
+        Some(Value::Array(blocks)) => blocks.iter().map(|b| js::len(js::str_of(b, "text")) as f64).sum(),
+        _ => 0.0,
+    }
+}
+
+#[derive(Default)]
+struct ToolTotals {
+    results: usize,
+    chars: f64,
+    over: [f64; 2],
+    reread: f64,
+}
+
+struct ToolResult {
+    tool: String,
+    time: f64,
+    chars: f64,
+    /// The API calls after it in the same transcript, up to the next compaction: each read it again.
+    later_calls: f64,
+}
+
+/// The tool results in one transcript, with their tool_use ids, and the folder it ran in.
+fn read_tool_results(file: &TranscriptFile) -> Result<(String, Vec<(String, ToolResult)>)> {
+    let handle = std::fs::File::open(&file.path).map_err(|error| format!("{error}, open '{}'", file.path.display()))?;
+    let mut names: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut seen_calls: HashSet<String> = HashSet::new();
+    let mut calls = 0.0;
+    let mut open: Vec<(String, ToolResult, f64)> = Vec::new(); // results since the last compaction, with the calls before them
+    let mut done = Vec::new();
+    let mut cwd = String::new();
+    let close = |open: &mut Vec<(String, ToolResult, f64)>, done: &mut Vec<(String, ToolResult)>, calls: f64| {
+        done.extend(open.drain(..).map(|(id, result, before)| (id, ToolResult { later_calls: calls - before, ..result })));
+    };
+    for line in std::io::BufReader::new(handle).split(b'\n') {
+        let Ok(line) = line else { break };
+        let line = String::from_utf8_lossy(&line);
+        if !line.contains("\"tool_") && !line.contains("\"usage\"") && !line.contains("\"compact_boundary\"") {
+            continue;
+        }
+        let Some(entry) = js::parse(&line) else { continue };
+        if js::str_of(&entry, "subtype") == "compact_boundary" {
+            close(&mut open, &mut done, calls);
+            continue;
+        }
+        if cwd.is_empty() && js::truthy(entry.get("cwd")) {
+            cwd = js::str_of(&entry, "cwd").to_string();
+        }
+        let Some(message) = entry.get("message") else { continue };
+        if js::str_of(&entry, "type") == "assistant" && js::truthy(message.get("usage")) && js::str_of(message, "model") != "<synthetic>" {
+            let id = js::str_of(message, "id");
+            if id.is_empty() || seen_calls.insert(id.to_string()) {
+                calls += 1.0;
+            }
+        }
+        let Some(Value::Array(blocks)) = message.get("content") else { continue };
+        for block in blocks {
+            match js::str_of(block, "type") {
+                "tool_use" => {
+                    names.insert(js::str_of(block, "id").to_string(), tool_label(js::str_of(block, "name")));
+                }
+                "tool_result" => {
+                    let id = js::str_of(block, "tool_use_id").to_string();
+                    let tool = names.get(&id).cloned().unwrap_or_else(|| "unknown".into());
+                    let result = ToolResult { tool, time: js::parse_date(js::str_of(&entry, "timestamp")), chars: result_chars(block.get("content")), later_calls: 0.0 };
+                    open.push((id, result, calls));
+                }
+                _ => {}
+            }
+        }
+    }
+    close(&mut open, &mut done, calls);
+    Ok((cwd, done))
+}
+
+struct ToolReport {
+    window: String,
+    results: usize,
+    total: ToolTotals,
+    tools: Vec<(String, ToolTotals)>,
+}
+
+/// Every tool result once, by its tool_use id: a forked session copies earlier results into its
+/// own file, and main sessions come first, as in read_all.
+fn tool_report(files: &[TranscriptFile], options: &Options) -> Result<ToolReport> {
+    let since = if js::truthy_number(options.days) { js::now() - options.days * 86400000.0 } else { 0.0 };
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut by_tool: IndexMap<String, ToolTotals> = IndexMap::new();
+    let mut total = ToolTotals::default();
+    for subagent in [false, true] {
+        let batch: Vec<&TranscriptFile> = files.iter().filter(|file| file.subagent == subagent).collect();
+        for (file, read) in batch.iter().zip(js::pool(&batch, CONCURRENCY, |file, _| read_tool_results(file))) {
+            let (cwd, results) = read?;
+            let project = project_of(&cwd, &file.folder);
+            if !options.project.is_empty() && !format!("{project} {}", file.folder).to_lowercase().contains(&options.project) {
+                continue;
+            }
+            for (id, result) in results {
+                if result.time < since || (!id.is_empty() && !seen.insert(id)) {
+                    continue;
+                }
+                let reread = result.chars / CHARS_PER_TOKEN * result.later_calls;
+                for totals in [by_tool.entry(result.tool).or_default(), &mut total] {
+                    totals.results += 1;
+                    totals.chars += result.chars;
+                    totals.reread += reread;
+                    for (i, floor) in TOOL_BUCKETS.iter().enumerate() {
+                        if result.chars > *floor {
+                            totals.over[i] += result.chars;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut tools: Vec<(String, ToolTotals)> = by_tool.into_iter().collect();
+    tools.sort_by(|a, b| b.1.reread.total_cmp(&a.1.reread));
+    let window = if js::truthy_number(options.days) { format!("last {} days", js::number(options.days)) } else { "all time".into() };
+    Ok(ToolReport { window, results: total.results, total, tools })
+}
+
+fn tool_json(name: &str, totals: &ToolTotals) -> Value {
+    json!({"tool": name, "results": totals.results, "chars": num(totals.chars),
+        "charsOver10k": num(totals.over[0]), "charsOver20k": num(totals.over[1]), "rereadTokens": num(totals.reread)})
+}
+
+fn render_tools(report: &ToolReport, options: &Options) -> String {
+    let total = &report.total;
+    let mut out = vec![format!("sessionkit usage --tools — {}: {} tool results, {} tokens in the context, read again {} times over",
+        report.window, js::grouped(report.results as f64), tokens(total.chars / CHARS_PER_TOKEN),
+        js::number(js::round(total.reread / (total.chars / CHARS_PER_TOKEN).max(1.0))))];
+    let header = format!("{}{}{}{}{}{}{}{}", pad("tool", 24), lpad("results", 9), lpad("tokens", 9), lpad("share", 7), lpad("avg", 7),
+        lpad(">10k", 6), lpad(">20k", 6), lpad("re-read", 10));
+    let rows = report.tools.iter().take(options.top).map(|(name, t)| format!("{}{}{}{}{}{}{}{}", pad(name, 24),
+        lpad(&js::grouped(t.results as f64), 9), lpad(&tokens(t.chars / CHARS_PER_TOKEN), 9), lpad(&share(t.chars, total.chars), 7),
+        lpad(&tokens(js::round(t.chars / CHARS_PER_TOKEN / t.results.max(1) as f64)), 7), lpad(&share(t.over[0], t.chars), 6),
+        lpad(&share(t.over[1], t.chars), 6), lpad(&share(t.reread, total.reread), 10))).collect();
+    out.push(table("Tool results in the context, by what later calls read again", header, rows));
+    out.push(String::new());
+    out.push("tokens: the text of the results, at 4 characters a token; images are left out. share: of all tool results.".into());
+    out.push(">10k, >20k: the part of a tool's results that came in results above 10,000 or 20,000 characters.".into());
+    out.push("re-read: each result times the API calls after it, up to the next compaction; each of them read it again.".into());
+    out.push("Only tool names and numbers: MCP tools appear by their server's name. Nothing leaves this machine.".into());
+    out.join("\n")
+}
+
 /// Read the transcripts in parallel; then keep every call once, by its message id, across all
 /// files. A response with several content blocks is written as several lines with the same usage,
 /// and a forked session copies earlier calls into its own file. Main sessions come first, so a
@@ -667,6 +833,16 @@ pub fn usage_main(argv: &[String]) -> Result<()> {
     if files.is_empty() {
         return Err(format!("No transcripts found in {}.", projects_dir().display()));
     }
+    if options.tools {
+        let report = tool_report(&files, &options)?;
+        if report.results == 0 {
+            return Err("No tool results found for these options.".into());
+        }
+        let json = json!({"window": report.window, "total": tool_json("all", &report.total),
+            "tools": report.tools.iter().map(|(name, t)| tool_json(name, t)).collect::<Vec<_>>()});
+        println!("{}", if options.json { js::stringify_pretty(&json) } else { render_tools(&report, &options) });
+        return Ok(());
+    }
     let transcripts = read_all(&files)?;
     let report = summarize(&transcripts, &options);
     if report.total.calls == 0 {
@@ -676,3 +852,34 @@ pub fn usage_main(argv: &[String]) -> Result<()> {
     Ok(())
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_result_counts_the_calls_after_it_up_to_the_next_compaction() {
+        let call = |id: &str, content: Value| json!({"type": "assistant", "timestamp": "2026-09-30T09:00:00Z",
+            "message": {"id": id, "model": "claude-opus-5-5", "usage": {"input_tokens": 1}, "content": content}});
+        let result = |id: &str, text: &str| json!({"type": "user", "timestamp": "2026-09-30T09:00:01Z",
+            "message": {"content": [{"type": "tool_result", "tool_use_id": id, "content": text}]}});
+        let lines = [
+            call("m1", json!([{"type": "tool_use", "id": "t1", "name": "Bash"}])),
+            result("t1", "12345678"),
+            call("m2", json!([{"type": "text", "text": "a"}])),
+            call("m2", json!([{"type": "tool_use", "id": "t2", "name": "mcp__playwright__browser_snapshot"}])),
+            result("t2", "1234"),
+            call("m3", json!([])),
+            json!({"type": "system", "subtype": "compact_boundary"}),
+            call("m4", json!([])),
+        ];
+        let path = std::env::temp_dir().join(format!("sessionkit-tools-{}.jsonl", std::process::id()));
+        std::fs::write(&path, lines.iter().map(|line| line.to_string() + "\n").collect::<String>()).unwrap();
+        let file = TranscriptFile { path: path.clone(), folder: String::new(), session: String::new(), subagent: false };
+        let (_, results) = read_tool_results(&file).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        let seen: Vec<(&str, &str, f64, f64)> = results.iter().map(|(id, r)| (id.as_str(), r.tool.as_str(), r.chars, r.later_calls)).collect();
+        // m2 is one call written as two lines; m4 comes after the compaction and reads neither.
+        assert_eq!(seen, [("t1", "Bash", 8.0, 2.0), ("t2", "mcp: playwright", 4.0, 1.0)]);
+    }
+}
