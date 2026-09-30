@@ -12,7 +12,7 @@
 // the blocks reached an AUC of 0.61 inside a result. Too weak to cut live, so there is no hook.
 
 use crate::Result;
-use crate::compact::{Message, goal, read_segments};
+use crate::compact::{Message, ToolUse, goal, read_segments};
 use crate::js;
 use crate::start::{PRICE_PER_MILLION_TOKENS, ask_choice, session_files};
 use regex::Regex;
@@ -21,12 +21,15 @@ use std::collections::HashSet;
 use std::sync::LazyLock;
 
 const USAGE: &str = "Usage: sessionkit trim --measure [results] [--verbose]
+       sessionkit trim --outline [reads]
 
 Measures whether cutting a large tool result down to the task would keep what the assistant
 needs: Jev (TypeSafe) judges the blocks of lines of large Bash and Read results in earlier
 transcripts, and the judgment is compared with what the assistant used afterwards.
 
   --measure   the number of results to judge (default 40; costs money)
+  --outline   what an outline of a large file first, and reading the used parts after, would
+              cost against reading the whole file (local, free)
   --verbose   with --measure: a line per judged block
   -h, --help  show this help";
 
@@ -236,6 +239,8 @@ struct Sample {
     recent: Vec<Value>,
     blocks: Vec<Block>,
     uses: Vec<Use>,
+    /// Assistant messages after the result in its stretch: about the calls that read it again.
+    later: usize,
 }
 
 const RECENT_STEPS: usize = 12;
@@ -253,8 +258,13 @@ pub fn recent_steps(messages: &[Message], at: usize) -> Vec<Value> {
     steps
 }
 
-/// Large results of Bash and Read in a stretch of conversation, with what came after them.
-fn samples_of(messages: &[Message], per_session: usize) -> Vec<Sample> {
+/// A large Bash or Read result, for the Jev measurement.
+fn large(call: &ToolUse, text: &str) -> bool {
+    threshold_of(&call.tool).is_some_and(|min| js::len(text) >= min)
+}
+
+/// Large results in a stretch of conversation that `select` takes, with what came after them.
+fn samples_of(messages: &[Message], per_session: usize, select: fn(&ToolUse, &str) -> bool) -> Vec<Sample> {
     let mut samples = Vec::new();
     for (i, message) in messages.iter().enumerate() {
         for result in &message.results {
@@ -262,7 +272,7 @@ fn samples_of(messages: &[Message], per_session: usize) -> Vec<Sample> {
                 continue;
             }
             let Some(call) = messages[..i].iter().rev().flat_map(|m| &m.uses).find(|u| u.id == result.id) else { continue };
-            if threshold_of(&call.tool).is_none_or(|min| js::len(&result.text) < min) || i + 3 >= messages.len() {
+            if !select(call, &result.text) || i + 3 >= messages.len() {
                 continue;
             }
             // What the assistant knew before: a name from there says nothing about this result.
@@ -274,8 +284,9 @@ fn samples_of(messages: &[Message], per_session: usize) -> Vec<Sample> {
             let blocks = blocks_of(&result.text, &call.tool);
             let after = &messages[i + 1..(i + 1 + AFTER_MESSAGES).min(messages.len())];
             let uses = uses(&call.tool, &call.input, &blocks, &before_text, after);
+            let later = messages[i + 1..].iter().filter(|m| m.role == "assistant").count();
             samples.push(Sample { tool: call.tool.clone(), input: call.input.clone(), task: goal(&messages[..i]), before: said.to_string(),
-                recent: recent_steps(messages, i), blocks, uses });
+                recent: recent_steps(messages, i), blocks, uses, later });
         }
     }
     samples
@@ -292,7 +303,7 @@ fn auc(used: &[f64], unused: &[f64]) -> Option<f64> {
 fn measure(max: usize, verbose: bool) -> Result<()> {
     let paths = session_files(true, usize::MAX)?;
     let found = js::pool(&paths, 8, |path, _| {
-        read_segments(path).unwrap_or_default().iter().flat_map(|segment| samples_of(segment, PER_SESSION)).take(PER_SESSION).collect::<Vec<_>>()
+        read_segments(path).unwrap_or_default().iter().flat_map(|segment| samples_of(segment, PER_SESSION, large)).take(PER_SESSION).collect::<Vec<_>>()
     });
     // Spread over sessions: newest first, a few per session.
     let samples: Vec<Sample> = found.into_iter().flatten().filter(|s| s.uses.iter().zip(&s.blocks).any(|(u, b)| !b.always && *u != Use::Unused)).take(max).collect();
@@ -353,8 +364,94 @@ fn measure(max: usize, verbose: bool) -> Result<()> {
     Ok(())
 }
 
+// ---------------------------------------------------------------- an outline first
+
+const OUTLINE_MIN_LINES: usize = 400;
+const OUTLINE_HEAD_LINES: usize = 20;
+const OUTLINE_LINE_CHARS: usize = 120;
+
+static CAT_FILE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"^(?:cd \S+ *(?:&&|;) *)*cat ("[^"]+"|'[^']+'|\S+)\s*$"#).unwrap());
+static DECLARATION: LazyLock<Regex> = LazyLock::new(|| Regex::new(concat!(
+    r"^\s{0,4}(?:(?:pub(?:\([^)]*\))?|export|default|async|abstract|final|static|public|private|protected|readonly|unsafe)\s+)*",
+    r"(?:fn|struct|enum|trait|impl|mod|type|interface|class|function|def|const|macro_rules!)\b|^#{1,6}\s")).unwrap());
+
+/// A whole file read at once: a Read without offset or limit, or a Bash `cat` of one file.
+fn whole_file(call: &ToolUse, text: &str) -> bool {
+    let whole = match call.tool.as_str() {
+        "Read" => call.input.get("offset").is_none() && call.input.get("limit").is_none(),
+        "Bash" => CAT_FILE.is_match(js::trim(js::str_of(&call.input, "command"))),
+        _ => false,
+    };
+    whole && text.split('\n').count() >= OUTLINE_MIN_LINES
+}
+
+/// What the agent would get instead of the file: its first lines, then every line that declares
+/// something or is a heading, with its line number.
+pub fn outline_of(text: &str) -> String {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let mut out: Vec<String> = lines[..OUTLINE_HEAD_LINES.min(lines.len())].iter().map(|l| l.to_string()).collect();
+    for (i, line) in lines.iter().enumerate().skip(OUTLINE_HEAD_LINES) {
+        let (number, plain) = match LINE_NUMBER.captures(line) {
+            Some(c) => (c[1].to_string(), &line[c.get(0).unwrap().end()..]),
+            None => ((i + 1).to_string(), *line),
+        };
+        if DECLARATION.is_match(plain) {
+            out.push(format!("{number}: {}", js::clip(js::trim_end(plain), OUTLINE_LINE_CHARS)));
+        }
+    }
+    out.join("\n")
+}
+
+/// sessionkit trim --outline: what an outline first, and reading the used blocks after, would
+/// have cost against the whole file. Local and free.
+fn measure_outline(max: usize) -> Result<()> {
+    let paths = session_files(true, usize::MAX)?;
+    let found = js::pool(&paths, 8, |path, _| {
+        read_segments(path).unwrap_or_default().iter().flat_map(|segment| samples_of(segment, usize::MAX, whole_file)).collect::<Vec<_>>()
+    });
+    let samples: Vec<Sample> = found.into_iter().flatten().take(max).collect();
+    if samples.is_empty() {
+        return Err("No whole reads of large files found.".into());
+    }
+    let (mut full, mut instead, mut full_weighted, mut instead_weighted) = (0.0, 0.0, 0.0, 0.0);
+    let (mut reads, mut untouched, mut outline_share) = (Vec::new(), 0, Vec::new());
+    for sample in &samples {
+        let text: String = sample.blocks.iter().map(|b| b.text.as_str()).collect::<Vec<_>>().join("\n");
+        let outline = js::len(&outline_of(&text)) as f64;
+        // Every used block is read again, one Read per run of neighbouring used blocks.
+        let used: Vec<bool> = sample.uses.iter().map(|u| *u != Use::Unused).collect();
+        let needed: f64 = sample.blocks.iter().zip(&used).filter(|(_, u)| **u).map(|(b, _)| js::len(&b.text) as f64 + 1.0).sum();
+        let runs = used.iter().enumerate().filter(|(i, u)| **u && (*i == 0 || !used[i - 1])).count();
+        let size = js::len(&text) as f64;
+        full += size;
+        instead += outline + needed;
+        full_weighted += size * sample.later as f64;
+        instead_weighted += (outline + needed) * sample.later as f64;
+        reads.push(runs);
+        untouched += usize::from(runs == 0);
+        outline_share.push(outline / size.max(1.0));
+    }
+    reads.sort_unstable();
+    outline_share.sort_by(f64::total_cmp);
+    let n = samples.len();
+    let percent = |x: f64| format!("{}%", js::round(100.0 * x));
+    println!("{n} whole reads of files of {OUTLINE_MIN_LINES} lines or more ({} Read, {} cat)",
+        samples.iter().filter(|s| s.tool == "Read").count(), samples.iter().filter(|s| s.tool == "Bash").count());
+    println!("outline: median {} of the file", percent(outline_share[n / 2]));
+    println!("outline plus the used blocks: {} of the characters, {} weighted by the later calls that read them",
+        percent(instead / full), percent(instead_weighted / full_weighted));
+    println!("extra reads per file: median {}, mean {}; {} of the files needed none",
+        reads[n / 2], js::fixed(reads.iter().sum::<usize>() as f64 / n as f64, 1), percent(untouched as f64 / n as f64));
+    println!();
+    println!("A block counts as used when a later Edit changes its text, a later Read reads its lines, or a later");
+    println!("call or text names a code name first seen in it, within {AFTER_MESSAGES} messages. Use that leaves no such trace is");
+    println!("missed, so the real cost of reading after the outline is higher than this.");
+    Ok(())
+}
+
 pub fn trim_main(argv: &[String]) -> Result<()> {
     match argv.first().map(String::as_str) {
+        Some("--outline") => measure_outline(argv.get(1).and_then(|n| n.parse().ok()).unwrap_or(usize::MAX)),
         Some("--measure") => {
             let max = argv.get(1).and_then(|n| n.parse().ok()).unwrap_or(40);
             measure(max, argv.iter().any(|a| a == "--verbose"))
@@ -382,6 +479,24 @@ mod tests {
         assert_eq!(blocks.len(), 5);
         assert_eq!(blocks.iter().map(|b| b.always).collect::<Vec<_>>(), [true, false, true, false, true]);
         assert_eq!((blocks[2].first, blocks[2].last), (81, 120));
+    }
+
+    #[test]
+    fn an_outline_keeps_the_head_and_the_declarations_with_their_numbers() {
+        let mut lines: Vec<String> = (1..=60).map(|n| format!("{n:>6}\t    let x{n} = {n};")).collect();
+        lines[29] = format!("{:>6}\tpub fn build(options: &Options) -> Result<()> {{", 30);
+        lines[44] = format!("{:>6}\t## Install", 45);
+        let outline = outline_of(&lines.join("\n"));
+        assert_eq!(outline.lines().count(), 22);
+        assert!(outline.ends_with("30: pub fn build(options: &Options) -> Result<()> {\n45: ## Install"));
+    }
+
+    #[test]
+    fn a_cat_of_one_file_is_a_whole_read() {
+        assert!(CAT_FILE.is_match("cd /p && cat src/start.rs"));
+        assert!(CAT_FILE.is_match("cat 'a b.md'"));
+        assert!(!CAT_FILE.is_match("cat src/a.rs | head -50"));
+        assert!(!CAT_FILE.is_match("cat a.rs b.rs"));
     }
 
     #[test]

@@ -22,6 +22,10 @@ All notable changes to sessionkit, called jev-start before 0.3.0. The format fol
   compares that with what the assistant used afterwards. On 150 results one Choice over the
   blocks reached an AUC of 0.61 inside a result, and a Noul per block ranked used blocks below
   unused ones, so nothing cuts results live.
+- **`sessionkit trim --outline`: what an outline of a large file first would cost.** For every
+  whole read of a file of 400 lines or more, it compares the file with an outline (the first
+  lines, then every declaration and heading with its line number) plus the parts the assistant
+  used afterwards. Local and free.
 
 ## [0.15.0] - 2026-09-30
 
