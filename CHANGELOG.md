@@ -17,6 +17,11 @@ All notable changes to sessionkit, called jev-start before 0.3.0. The format fol
   its results, the part in results above 10k and 20k characters, and how often later calls read
   them again from the cache, up to the next compaction. Only tool names and numbers, so the
   output can be shared; it decides what sessionkit trims next.
+- **`sessionkit trim --measure`: would cutting large tool results early keep what is needed?**
+  Splits large Bash and Read results in earlier transcripts into blocks, lets Jev judge them, and
+  compares that with what the assistant used afterwards. On 150 results one Choice over the
+  blocks reached an AUC of 0.61 inside a result, and a Noul per block ranked used blocks below
+  unused ones, so nothing cuts results live.
 
 ## [0.15.0] - 2026-09-30
 

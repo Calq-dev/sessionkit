@@ -97,24 +97,24 @@ const STATE_CONTEXT: &str = "A coding assistant conversation is being compacted 
 // ---------------------------------------------------------------- messages
 
 pub struct ToolUse {
-    id: String,
-    tool: String,
-    input: Value,
-    text: Option<String>,
-    is_error: bool,
+    pub id: String,
+    pub tool: String,
+    pub input: Value,
+    pub text: Option<String>,
+    pub is_error: bool,
 }
 
 pub struct ToolResult {
-    id: String,
-    text: String,
-    is_error: bool,
+    pub id: String,
+    pub text: String,
+    pub is_error: bool,
 }
 
 pub struct Message {
-    role: String,
-    text: String,
-    uses: Vec<ToolUse>,
-    results: Vec<ToolResult>,
+    pub role: String,
+    pub text: String,
+    pub uses: Vec<ToolUse>,
+    pub results: Vec<ToolResult>,
 }
 
 /// A message in the shape of Claude Code's SessionMessage.
@@ -294,7 +294,7 @@ fn history(messages: &[Message], calls: &[ToolCall], input_chars: usize) -> Vec<
 }
 
 /// The last three prompts of the person: what the conversation is about now.
-fn goal(messages: &[Message]) -> String {
+pub fn goal(messages: &[Message]) -> String {
     let prompts: Vec<String> = messages.iter()
         .filter(|m| m.role == "user" && !js::trim(&m.text).is_empty() && m.results.is_empty())
         .map(|m| truncate(&m.text, 500)).collect();
@@ -702,7 +702,7 @@ fn read_transcript(path: &PathBuf) -> Result<Vec<Message>> {
 
 /// Every stretch of the conversation between two compaction boundaries, oldest first: each is a
 /// conversation as the hook would have been handed it at its end.
-fn read_segments(path: &PathBuf) -> Result<Vec<Vec<Message>>> {
+pub fn read_segments(path: &PathBuf) -> Result<Vec<Vec<Message>>> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let entries: Vec<Value> = text.lines().filter_map(js::parse).filter(|e| !js::truthy(e.get("isSidechain"))).collect();
     let mut segments = vec![Vec::new()];
