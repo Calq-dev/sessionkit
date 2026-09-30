@@ -49,11 +49,11 @@ const KEEP_THRESHOLD: f64 = 0.5; // for the call question
 // The result question answers around 0.7 for most outputs; at 0.78 it kept 40% of the outputs that
 // came back and 10% of those that did not, on held-out cuts.
 const KEEP_RESULT_THRESHOLD: f64 = 0.78;
-const PRESERVE_RECENT_MESSAGES: usize = 6;
+pub const PRESERVE_RECENT_MESSAGES: usize = 6;
 const MAX_STATE_TOKENS: usize = 25_000;
 const MAX_REQUEST_TOKENS: usize = 30_000; // state plus questions, under Jev's 32k request limit
 const REQUEST_OVERHEAD_TOKENS: usize = 20;
-const TRUNCATE_HEAD_CHARS: usize = 300;
+pub const TRUNCATE_HEAD_CHARS: usize = 300;
 const MIN_REDUCTION: f64 = 0.25; // below this the summary of Claude Code frees more
 const CONCURRENCY: usize = 6;
 const INPUT_CHARS: [usize; 3] = [1000, 200, 60];

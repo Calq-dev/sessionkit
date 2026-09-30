@@ -9,7 +9,9 @@ All notable changes to sessionkit, called jev-start before 0.3.0. The format fol
 - **An optional output style, `sessionkit-robot`.** Terse and neutral; after a tool call that
   taught it something, the agent writes one `Noted:` line with the exact facts, which a
   compaction without summary keeps. Pick it with `/output-style sessionkit-robot`; nothing
-  switches it on by itself.
+  switches it on by itself. `sessionkit trim --articulation [--days n]` measures how many of the
+  facts an agent used after a possible compaction were in its own text: 7.5% over 93 sessions
+  before the style, locally and free.
 - **A large warm session asks to compact first.** Above 300K tokens of context
   (`SESSIONKIT_COMPACT_ABOVE`), the dialog shows what a call costs now and after /compact.
   *Compact first* runs /compact and then sends the message; *Always at 300K* also sets Claude

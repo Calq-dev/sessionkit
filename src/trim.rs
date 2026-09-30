@@ -12,7 +12,7 @@
 // the blocks reached an AUC of 0.61 inside a result. Too weak to cut live, so there is no hook.
 
 use crate::Result;
-use crate::compact::{Message, ToolUse, goal, read_segments};
+use crate::compact::{Message, PRESERVE_RECENT_MESSAGES, TRUNCATE_HEAD_CHARS, ToolUse, goal, read_segments};
 use crate::js;
 use crate::start::{PRICE_PER_MILLION_TOKENS, ask_choice, session_files};
 use regex::Regex;
@@ -22,6 +22,7 @@ use std::sync::LazyLock;
 
 const USAGE: &str = "Usage: sessionkit trim --measure [results] [--verbose]
        sessionkit trim --outline [reads]
+       sessionkit trim --articulation [sessions] [--days n]
 
 Measures whether cutting a large tool result down to the task would keep what the assistant
 needs: Jev (TypeSafe) judges the blocks of lines of large Bash and Read results in earlier
@@ -29,6 +30,8 @@ transcripts, and the judgment is compared with what the assistant used afterward
 
   --measure   the number of results to judge (default 40; costs money)
   --declarations  for the plugin: print the outline lines of the text on stdin as JSON
+  --articulation  of the facts an agent used after a possible compaction, how many it had
+              written in its own text, which compaction keeps (local, free)
   --outline   what an outline of a large file first, and reading the used parts after, would
               cost against reading the whole file (local, free)
   --verbose   with --measure: a line per judged block
@@ -460,9 +463,166 @@ fn measure_outline(max: usize) -> Result<()> {
     Ok(())
 }
 
+// ---------------------------------------------------------------- articulation
+
+const POINTS_PER_SESSION: usize = 3;
+const CUT_SLACK: usize = 120; // compact::cut keeps a result this close to its head whole
+
+static LINE_REF: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[A-Za-z0-9_.-]+\.[a-z]{1,5}:\d+").unwrap());
+
+/// The facts of a text that an agent can need again: code names, and file:line references.
+fn facts(text: &str) -> HashSet<String> {
+    let mut found: HashSet<String> = code_names(text).into_iter().map(str::to_string).collect();
+    found.extend(LINE_REF.find_iter(text).map(|m| m.as_str().to_string()));
+    found
+}
+
+fn inputs_of(message: &Message) -> String {
+    message.uses.iter().map(|u| js::stringify(&u.input)).collect::<Vec<_>>().join("\n")
+}
+
+fn is_prompt(message: &Message) -> bool {
+    message.role == "user" && message.results.is_empty() && !js::trim(&message.text).is_empty() && !js::trim(&message.text).starts_with('<')
+}
+
+#[derive(Default)]
+struct Articulation {
+    sessions: usize,
+    points: usize,
+    results_used: usize,
+    results_unused: usize,
+    facts_used: usize,
+    facts_said: usize,
+    facts_in_input: usize,
+    results_none_said: usize,
+    by_tool: std::collections::BTreeMap<String, (usize, usize)>,
+    tool_calls: usize,
+    notes: usize,
+}
+
+/// One compaction point: of the facts in results before `cut` that compaction may cut and that
+/// the agent used after it, which had it written in its own text, or in a tool input, before it?
+/// A fact counts as used when the agent names it after the point before any later result brings
+/// it back: then it can only have come from the old result, or from its own text.
+fn articulation_at(messages: &[Message], cut: usize, stats: &mut Articulation) {
+    let tool_of: std::collections::HashMap<&str, &str> = messages.iter().flat_map(|m| &m.uses).map(|u| (u.id.as_str(), u.tool.as_str())).collect();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut candidates: Vec<(usize, String, HashSet<String>)> = Vec::new();
+    for (i, message) in messages[..cut].iter().enumerate() {
+        for result in &message.results {
+            let pinned = i == 0 || i + PRESERVE_RECENT_MESSAGES >= cut;
+            if js::len(&result.text) > TRUNCATE_HEAD_CHARS + CUT_SLACK && !pinned {
+                let head = js::head(&result.text, TRUNCATE_HEAD_CHARS);
+                let kept = facts(head);
+                let new: HashSet<String> = facts(&result.text[head.len()..]).into_iter().filter(|f| !kept.contains(f) && !seen.contains(f)).collect();
+                candidates.push((i, tool_of.get(result.id.as_str()).unwrap_or(&"?").to_string(), new));
+            }
+            seen.extend(facts(&result.text));
+        }
+        seen.extend(facts(&message.text));
+        seen.extend(facts(&inputs_of(message)));
+    }
+    let (mut first_use, mut first_back) = (std::collections::HashMap::new(), std::collections::HashMap::new());
+    for (j, message) in messages[cut..].iter().enumerate() {
+        let own = if message.role == "assistant" { message.text.as_str() } else { "" };
+        for fact in facts(&format!("{own}\n{}", inputs_of(message))) {
+            first_use.entry(fact).or_insert(j);
+        }
+        for result in &message.results {
+            for fact in facts(&result.text) {
+                first_back.entry(fact).or_insert(j);
+            }
+        }
+    }
+    for (i, tool, new) in candidates {
+        let used: Vec<&String> = new.iter().filter(|f| first_use.get(*f).is_some_and(|u| u <= first_back.get(*f).unwrap_or(&usize::MAX))).collect();
+        if used.is_empty() {
+            stats.results_unused += 1;
+            continue;
+        }
+        let between = &messages[i + 1..cut];
+        let own: String = between.iter().filter(|m| m.role == "assistant").map(|m| m.text.as_str()).collect::<Vec<_>>().join("\n");
+        let inputs: String = between.iter().map(inputs_of).collect::<Vec<_>>().join("\n");
+        let said = used.iter().filter(|f| own.contains(f.as_str())).count();
+        let in_input = used.iter().filter(|f| !own.contains(f.as_str()) && inputs.contains(f.as_str())).count();
+        stats.results_used += 1;
+        stats.facts_used += used.len();
+        stats.facts_said += said;
+        stats.facts_in_input += in_input;
+        stats.results_none_said += usize::from(said == 0);
+        let entry = stats.by_tool.entry(tool).or_default();
+        entry.0 += used.len();
+        entry.1 += said;
+    }
+}
+
+/// sessionkit trim --articulation: how much of what agents learn from tool output they write
+/// down in their own text, which a compaction without summary keeps. Local and free.
+fn measure_articulation(max: usize, days: Option<f64>) -> Result<()> {
+    let since = days.map_or(0.0, |d| js::now() - d * 86_400_000.0);
+    let paths: Vec<_> = session_files(true, usize::MAX)?.into_iter().filter(|p| js::mtime_ms(p).unwrap_or(0.0) >= since).take(max).collect();
+    let found = js::pool(&paths, 8, |path, _| {
+        let mut stats = Articulation::default();
+        for messages in read_segments(path).unwrap_or_default() {
+            stats.tool_calls += messages.iter().map(|m| m.uses.len()).sum::<usize>();
+            stats.notes += messages.iter().filter(|m| m.role == "assistant").map(|m| m.text.matches("Noted:").count()).sum::<usize>();
+            let prompts: Vec<usize> = (0..messages.len()).filter(|&i| is_prompt(&messages[i]) && i * 5 >= messages.len() && i * 10 <= messages.len() * 9).collect();
+            let step = (prompts.len() / POINTS_PER_SESSION).max(1);
+            for &cut in prompts.iter().step_by(step).take(POINTS_PER_SESSION) {
+                articulation_at(&messages, cut, &mut stats);
+                stats.points += 1;
+            }
+        }
+        stats
+    });
+    let mut total = Articulation::default();
+    for stats in found {
+        total.sessions += usize::from(stats.points > 0);
+        total.points += stats.points;
+        total.results_used += stats.results_used;
+        total.results_unused += stats.results_unused;
+        total.facts_used += stats.facts_used;
+        total.facts_said += stats.facts_said;
+        total.facts_in_input += stats.facts_in_input;
+        total.results_none_said += stats.results_none_said;
+        total.tool_calls += stats.tool_calls;
+        total.notes += stats.notes;
+        for (tool, (used, said)) in stats.by_tool {
+            let entry = total.by_tool.entry(tool).or_default();
+            entry.0 += used;
+            entry.1 += said;
+        }
+    }
+    if total.facts_used == 0 {
+        return Err("No compaction points with a used fact found for these options.".into());
+    }
+    let share = |part: usize, whole: usize| format!("{}%", js::fixed(100.0 * part as f64 / whole.max(1) as f64, 1));
+    println!("{} sessions{}, {} compaction points; {} results compaction may cut, {} with a fact used after the point",
+        total.sessions, days.map_or(String::new(), |d| format!(" of the last {} days", js::number(d))), total.points,
+        total.results_used + total.results_unused, total.results_used);
+    println!("facts used after the point: {}", total.facts_used);
+    println!("  in the agent's own text before it (articulation): {}", share(total.facts_said, total.facts_used));
+    println!("  only in a tool input, which compaction keeps:       {}", share(total.facts_in_input, total.facts_used));
+    println!("  only in tool output, which compaction may cut:      {}",
+        share(total.facts_used - total.facts_said - total.facts_in_input, total.facts_used));
+    println!("results whose used facts the agent wrote none of: {}", share(total.results_none_said, total.results_used));
+    let mut tools: Vec<_> = total.by_tool.iter().collect();
+    tools.sort_by(|a, b| b.1.0.cmp(&a.1.0));
+    for (tool, (used, said)) in tools.into_iter().take(5) {
+        println!("  {tool}: {} of {used}", share(*said, *used));
+    }
+    println!("Noted: lines: {} over {} tool calls ({} per call)", total.notes, total.tool_calls, js::fixed(total.notes as f64 / total.tool_calls.max(1) as f64, 2));
+    Ok(())
+}
+
 pub fn trim_main(argv: &[String]) -> Result<()> {
     match argv.first().map(String::as_str) {
         Some("--declarations") => print_declarations(),
+        Some("--articulation") => {
+            let days = argv.iter().position(|a| a == "--days").and_then(|i| argv.get(i + 1)).and_then(|n| n.parse().ok());
+            let max = argv.get(1).filter(|a| !a.starts_with("--")).and_then(|n| n.parse().ok()).unwrap_or(usize::MAX);
+            measure_articulation(max, days)
+        }
         Some("--outline") => measure_outline(argv.get(1).and_then(|n| n.parse().ok()).unwrap_or(usize::MAX)),
         Some("--measure") => {
             let max = argv.get(1).and_then(|n| n.parse().ok()).unwrap_or(40);
@@ -509,6 +669,27 @@ mod tests {
         assert!(CAT_FILE.is_match("cat 'a b.md'"));
         assert!(!CAT_FILE.is_match("cat src/a.rs | head -50"));
         assert!(!CAT_FILE.is_match("cat a.rs b.rs"));
+    }
+
+    #[test]
+    fn a_fact_in_the_agent_s_own_text_survives_the_cut() {
+        let msg = |role: &str, text: &str| Message { role: role.into(), text: text.into(), uses: Vec::new(), results: Vec::new() };
+        let tail = "x".repeat(400);
+        let mut messages = vec![msg("user", "fix the upload")];
+        let mut call = msg("assistant", "");
+        call.uses.push(ToolUse { id: "t1".into(), tool: "Read".into(), input: json!({"file_path": "a.rs"}), text: None, is_error: false });
+        messages.push(call);
+        let mut result = msg("user", "");
+        result.results.push(crate::compact::ToolResult { id: "t1".into(), text: format!("{tail} fn retry_upload() and MAX_RETRIES_TOTAL"), is_error: false });
+        messages.push(result);
+        messages.push(msg("assistant", "Noted: `retry_upload` retries three times."));
+        messages.extend((0..PRESERVE_RECENT_MESSAGES).map(|_| msg("assistant", "working")));
+        messages.push(msg("user", "go on"));
+        let cut = messages.len() - 1;
+        messages.push(msg("assistant", "I change retry_upload and MAX_RETRIES_TOTAL."));
+        let mut stats = Articulation::default();
+        articulation_at(&messages, cut, &mut stats);
+        assert_eq!((stats.facts_used, stats.facts_said), (2, 1));
     }
 
     #[test]

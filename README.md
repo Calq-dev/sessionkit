@@ -173,7 +173,9 @@ apart.
   summary keeps all text, so those facts survive it while the tool output goes. Measured on the
   transcripts here: of the facts an agent used after a possible compaction, 8.5% were in its own
   text, 51% in a tool input that stays, and 41% only in tool output that would go. Not forced:
-  sessionkit works the same with any style.
+  sessionkit works the same with any style. `sessionkit trim --articulation --days 7` measures
+  it again for your own sessions, locally and free, with the number of `Noted:` lines per tool
+  call as what the notes cost.
 
 - **After the first large read** (400 lines or more, the whole file): one line in the context
   tells the agent that `sessionkit ask` answers a question about a file without reading it, and
