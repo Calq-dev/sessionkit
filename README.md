@@ -158,6 +158,12 @@ apart.
   hook (`hook prompt`) acts alone: where it can it closes the session and continues in a fresh
   one, elsewhere it stops the message once; send it again to go ahead.
 
+- **With each message, a line on what calls cost**: above 50K tokens of context
+  (`SESSIONKIT_COST_NOTE_ABOVE`), the prompt hook adds one line to the agent's context: how
+  large its context is and what each of its calls costs, and the same for up to three other
+  sessions running in this folder, with whether they are idle and warm. Facts only, no advice;
+  about 50 tokens a message.
+
 - **When a warm session has grown large** (300K tokens by default; `SESSIONKIT_COMPACT_ABOVE`),
   the dialog asks whether to compact first: every message re-reads the whole context, and it
   shows the cost per call now and after /compact. A simulation over earlier sessions found that

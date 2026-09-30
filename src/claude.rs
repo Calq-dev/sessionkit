@@ -316,8 +316,35 @@ fn ack(id: &str, state: &CacheState) -> Result<()> {
 /// close this one and continue the message in a fresh one. Else stop the message once: sending it
 /// again goes through. A message the plugin's dialog let through is acked, and goes through.
 /// Returns the hook result and the Claude Code to stop once the result is out.
+const COST_NOTE_PEERS: usize = 3;
+
+/// One line for the agent's context with each message: what one of its own calls costs now, and
+/// what the other sessions running in this folder cost per call. Only facts, no advice. Only
+/// above COST_NOTE_ABOVE tokens of context.
+fn cost_note(input: &Value, state: &CacheState) -> Option<String> {
+    let per_call = state.per_call?;
+    if state.context < setting("COST_NOTE_ABOVE", 50_000.0) {
+        return None;
+    }
+    let id = session_id(input);
+    let folder = peers::folder_of(&id).unwrap_or_default();
+    let others: Vec<String> = peers::running(&id).into_iter().filter(|p| peers::same_folder(&p.cwd, &folder))
+        .filter_map(|p| {
+            let cache = p.cache?;
+            let warm = if cache.warm { format!("warm {}", minutes(cache.left)) } else { "cold".into() };
+            Some(format!("{} {} {} ({} a call, {warm})", p.name, p.status, tokens(cache.context), usd(cache.per_call?)))
+        })
+        .take(COST_NOTE_PEERS).collect();
+    Some(format!("sessionkit: this session has {} tokens of context; each of your calls reads all of it, about {}.{}",
+        tokens(state.context), usd(per_call),
+        if others.is_empty() { String::new() } else { format!(" Other sessions here: {}.", others.join("; ")) }))
+}
+
 fn prompt(input: &Value) -> Result<Option<(Value, Option<i64>)>> {
-    let Some(state) = cold_state(input) else { return Ok(None) };
+    let Some(state) = cold_state(input) else {
+        let note = transcript_state(input).and_then(|state| cost_note(input, &state));
+        return Ok(note.map(|text| (json!({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": text}}), None)));
+    };
     let cold_call = state.cold_call.unwrap_or(f64::NAN);
     let id = session_id(input);
     if acked(&id, &state) {
