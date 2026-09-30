@@ -12,6 +12,11 @@ All notable changes to sessionkit, called jev-start before 0.3.0. The format fol
   read the whole file again. The plugin now does that Read itself, through the engine, so the
   text stays out of the conversation, and retries the Edit, whose `old_string` must still match
   exactly once. Not for `replace_all` or Write.
+- **A teammate's report that arrives twice is left out the second time.** When a teammate goes
+  idle, its notification carries its report again, after it already sent it with SendMessage:
+  101 of 616 such notifications in the transcripts here, and 75 of them cost the lead a turn at a
+  median context of 371K tokens. The notification still arrives; its repeated result becomes one
+  line that names the earlier message.
 - **Outline first for large files, an option.** With *Outline first for large files* on in
   `/config`, the first whole read of a file of 400 lines or more shows its first 20 lines and its
   declarations and headings with their line numbers; a second whole read gets all of it. Off by

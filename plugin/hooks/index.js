@@ -4,6 +4,7 @@ import { register as compact } from "./compact.js";
 import { register as edit } from "./edit.js";
 import { register as prompt } from "./prompt.js";
 import { register as read } from "./read.js";
+import { register as repeat } from "./repeat.js";
 
 /** @type {import('claude-code').Register} */
 export const register = (on, options) => {
@@ -12,4 +13,5 @@ export const register = (on, options) => {
   edit(on, options);
   prompt(on, options);
   read(on, options);
+  repeat(on, options);
 };

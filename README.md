@@ -183,6 +183,15 @@ apart.
   again. The Edit stays safe: its `old_string` must still match the file exactly, once. Not for
   `replace_all`, nor for Write, which replaces the whole file. A function hook on `tool.call`.
 
+- **When a teammate's report arrives twice**: a teammate sends its report with SendMessage, and
+  when it goes idle its notification carries the same text again. The lead reads it twice and
+  often spends a turn saying it already had it: in the transcripts here, 101 of 616 idle
+  notifications with a result repeated a message from the same teammate, and 75 were followed
+  by a turn without tools, at a median context of 371K tokens. The notification still arrives,
+  so a lead that waits for it still wakes; only a result that shares 60% of its words with one of
+  the teammate's last five messages becomes one line naming that message. A function hook on
+  `session.receive`, tested against the engine's test kit but not yet in a live team.
+
 - **When a subagent starts**, in shadow: Jev says which model and effort level would have been
   enough for its task, and `hook agent-route` logs that beside the model it got, in
   `~/.cache/sessionkit/agent-routes.jsonl`. Nothing changes the spawn, and it does not wait. The
