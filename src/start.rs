@@ -16,7 +16,7 @@
 // key stored in the keychain under "jev-start".
 
 use crate::Result;
-use crate::js::{self, clip, len, num};
+use crate::js::{self, clip, clip_middle, len, num};
 use crate::next::{run_handoff, take_handoff};
 use crate::usage::{home, projects_dir};
 use indexmap::IndexMap;
@@ -523,7 +523,11 @@ fn follow_chains(scored: &mut [Scored], chains: &Chains) -> Vec<Scored> {
 #[derive(Clone)]
 pub struct Exchange {
     pub prompt: String,
+    /// Everything the assistant put to the person in the turn: all its texts, and its questions and plans.
     pub answer: String,
+    /// The last text of the turn, usually its conclusion. The session cards show it, as they did
+    /// when the routing thresholds were measured.
+    pub conclusion: String,
     pub timestamp: String,
     /// The files the exchange edited, in the order of their first edit.
     pub files: Vec<String>,
@@ -791,8 +795,28 @@ fn record_tool_call(session: &mut Session, exchange: usize, call: &Value, timest
     }
 }
 
-/// Read one session into exchanges: a human prompt and the last text the assistant wrote
-/// before the next prompt. The last text is usually the conclusion of that turn.
+/// What a proposal made through a tool looks like as text: a question with its options, or a plan.
+/// The person answered it in a tool dialog, so no assistant text carries it.
+fn proposal_text(call: &Value) -> String {
+    let input = call.get("input");
+    match js::str_of(call, "name") {
+        "AskUserQuestion" => input.and_then(|i| i.get("questions")).and_then(Value::as_array).into_iter().flatten().map(|question| {
+            let options = question.get("options").and_then(Value::as_array).into_iter().flatten()
+                .map(|option| js::str_of(option, "label")).filter(|label| !label.is_empty()).collect::<Vec<_>>();
+            let options = if options.is_empty() { String::new() } else { format!(" Options: {}", options.join(" / ")) };
+            format!("Asked the person: {}{options}", js::str_of(question, "question"))
+        }).collect::<Vec<_>>().join("\n"),
+        "ExitPlanMode" => match input.map_or("", |i| js::str_of(i, "plan")) {
+            "" => String::new(),
+            plan => format!("Proposed plan:\n{plan}"),
+        },
+        _ => String::new(),
+    }
+}
+
+/// Read one session into exchanges: a human prompt and everything the assistant wrote before the
+/// next prompt: all its texts, and the questions and plans it put to the person through tools. A
+/// proposal is often not in the closing text.
 fn parse_session(path: &Path) -> Result<Session> {
     let file = std::fs::File::open(path).map_err(|error| format!("{error}, open '{}'", path.display()))?;
     let id = basename(&path.to_string_lossy());
@@ -805,6 +829,8 @@ fn parse_session(path: &Path) -> Result<Session> {
     // A compaction without a summary (sessionkit compact) writes the kept messages again after
     // the boundary, with their own timestamps; they are copies of what was read already.
     let mut boundary = String::new();
+    // Some transcripts repeat a message with the same id and time; its text counts once.
+    let mut seen: HashSet<(String, String)> = HashSet::new();
     for line in std::io::BufReader::new(file).split(b'\n') {
         let Ok(line) = line else { break };
         let line = String::from_utf8_lossy(&line);
@@ -853,17 +879,31 @@ fn parse_session(path: &Path) -> Result<Session> {
             }
             let automated = js::str_of(&entry, "promptSource") == "sdk" || prompt.contains("<teammate-message");
             session.exchanges.push(Exchange {
-                prompt, answer: String::new(), timestamp, files: Vec::new(), tool_calls: 0, commands: Vec::new(), automated, plant: None,
+                prompt, answer: String::new(), conclusion: String::new(), timestamp, files: Vec::new(), tool_calls: 0, commands: Vec::new(), automated, plant: None,
             });
             current = Some(session.exchanges.len() - 1);
         } else if let Some(exchange) = current.filter(|_| kind == "assistant" && !js::truthy(entry.get("isSidechain"))) {
+            let message_id = entry.get("message").map_or("", |message| js::str_of(message, "id"));
+            let mut add = |session: &mut Session, text: String, key: &str| {
+                if text.is_empty() || (!message_id.is_empty() && !seen.insert((message_id.to_string(), key.to_string()))) {
+                    return false;
+                }
+                let answer = &mut session.exchanges[exchange].answer;
+                if !answer.is_empty() {
+                    answer.push_str("\n\n");
+                }
+                answer.push_str(&text);
+                true
+            };
             let text = clean_text(&text_of(content_of(&entry)));
-            if !text.is_empty() {
-                session.exchanges[exchange].answer = text;
+            if add(&mut session, text.clone(), &text) {
+                session.exchanges[exchange].conclusion = text;
             }
             if let Some(Value::Array(blocks)) = content_of(&entry) {
                 for call in blocks.iter().filter(|block| js::str_of(block, "type") == "tool_use") {
                     record_tool_call(&mut session, exchange, call, &timestamp);
+                    let proposal = proposal_text(call);
+                    add(&mut session, proposal.clone(), &proposal);
                 }
             }
         }
@@ -889,7 +929,7 @@ const CARD_BUDGET_CHARS: usize = 10000;
 /// outcome, and the final outcome. A long session keeps its first and last requests.
 pub fn session_card(session: &Session) -> Value {
     let turns: Vec<Value> = session.exchanges.iter()
-        .map(|e| json!({"request": clip(&e.prompt, CARD_PROMPT_CHARS), "outcome": clip(&e.answer, CARD_OUTCOME_CHARS)}))
+        .map(|e| json!({"request": clip(&e.prompt, CARD_PROMPT_CHARS), "outcome": clip(&e.conclusion, CARD_OUTCOME_CHARS)}))
         .collect();
     let fit = 2.max(CARD_BUDGET_CHARS / (CARD_PROMPT_CHARS + CARD_OUTCOME_CHARS + 40));
     let shown = if turns.len() > fit {
@@ -906,7 +946,7 @@ pub fn session_card(session: &Session) -> Value {
         "branch": session.branch,
         "date": day(&session.end),
         "turns": shown,
-        "final_outcome": clip(session.exchanges.last().map_or("", |e| &e.answer), CARD_FINAL_CHARS),
+        "final_outcome": clip(session.exchanges.last().map_or("", |e| &e.conclusion), CARD_FINAL_CHARS),
     })
 }
 
@@ -933,7 +973,7 @@ fn exchange_question(session: &Session, exchange: &Exchange) -> Value {
             "question": "Does `exchange` contain a decision, result, constraint or open issue that the \
                 developer needs for `new_task`? Small talk, retries and unrelated steps are no.",
             "session_title": session.title,
-            "exchange": {"request": clip(&exchange.prompt, 1200), "conclusion": clip(&exchange.answer, 2500)},
+            "exchange": {"request": clip(&exchange.prompt, 1200), "conclusion": clip_middle(&exchange.answer, 2500)},
         },
         "criteria": {
             "true": "The exchange states something that applies directly to the new task.",
@@ -947,7 +987,7 @@ fn relative<'a>(file: &'a str, folder: &str) -> &'a str {
     if folder.is_empty() { file } else { file.strip_prefix(folder).and_then(|rest| rest.strip_prefix('/')).unwrap_or(file) }
 }
 
-/// The whole session as one outline: every turn with its request, the start of its conclusion and
+/// The whole session as one outline: every turn with its request, its conclusion, cut in the middle when long, and
 /// the files it changed. It is fitted into the budget in stages: shorter texts first, then turns
 /// left out from the middle. The first and the last turns always stay.
 fn session_outline(session: &Session) -> Vec<Value> {
@@ -955,7 +995,7 @@ fn session_outline(session: &Session) -> Vec<Value> {
         let mut turn = Map::new();
         turn.insert("turn".into(), (n + 1).into());
         turn.insert("request".into(), clip(&exchange.prompt, chars).into());
-        turn.insert("conclusion".into(), clip(&exchange.answer, chars).into());
+        turn.insert("conclusion".into(), clip_middle(&exchange.answer, chars).into());
         if !exchange.files.is_empty() {
             turn.insert("changed".into(), exchange.files.iter().map(|file| relative(file, &session.cwd)).collect::<Vec<_>>().into());
         }
@@ -1007,7 +1047,7 @@ fn continuation_question(exchange: &Exchange, n: usize) -> Value {
                 person stated still applies after the work is done. No when a later turn explicitly \
                 replaced it, or when the turn only did a one-off step (a login, a rerun, a question \
                 that was answered) with no lasting effect on the work.", n + 1),
-            "turn": {"number": n + 1, "request": clip(&exchange.prompt, 1200), "conclusion": clip(&exchange.answer, 2500)},
+            "turn": {"number": n + 1, "request": clip(&exchange.prompt, 1200), "conclusion": clip_middle(&exchange.answer, 2500)},
         },
         "criteria": {
             "true": "The turn holds something that still shapes the work: a decision, preference, rule, result or open issue.",
@@ -1150,7 +1190,7 @@ fn route_card(item: &Scored) -> Value {
         "folder": session.cwd,
         "date": day(&session.end),
         "last_requests": recent.iter().map(|e| clip(&e.prompt, 250)).collect::<Vec<_>>(),
-        "final_outcome": clip(session.exchanges.last().map_or("", |e| &e.answer), 500),
+        "final_outcome": clip(session.exchanges.last().map_or("", |e| &e.conclusion), 500),
     });
     if let Some(continues) = &item.continues {
         card["continues_earlier_session"] = json!(continues);
@@ -1302,7 +1342,9 @@ pub fn continue_session(prompt: &str, session: Arc<Session>, verbose: bool, chai
     let state = continuation_state(prompt, &session);
     let question_budget = 20000.max(SESSION_REQUEST_CHARS as i64 - len(&js::stringify(&state)) as i64) as usize;
 
-    let all_blocks: Vec<Block> = exchanges.iter().enumerate().flat_map(|(n, e)| blocks_of(&e.answer, n + 1)).collect();
+    // Open items come from the closing texts only: earlier texts narrate steps the turn itself
+    // finished, and read as open. A proposal in them still reaches the context with its turn.
+    let all_blocks: Vec<Block> = exchanges.iter().enumerate().flat_map(|(n, e)| blocks_of(&e.conclusion, n + 1)).collect();
     let blocks = all_blocks[all_blocks.len().saturating_sub(OPEN_BLOCKS_MAX)..].to_vec();
     let mut questions: Vec<Value> = exchanges.iter().enumerate().map(|(n, e)| continuation_question(e, n)).collect();
     questions.extend(exchanges.iter().enumerate().map(|(n, e)| rule_question(e, n)));
@@ -1485,7 +1527,7 @@ fn render_context(chosen: &[Chosen], continuing: bool) -> String {
             let label = kept.turn.map_or_else(|| "Request".to_string(), |turn| format!("Turn {turn}: request"));
             parts.extend([String::new(), format!("### {label} ({})", day(&kept.exchange.timestamp)), String::new(), clip(&kept.exchange.prompt, 1200)]);
             if !kept.exchange.answer.is_empty() {
-                parts.extend([String::new(), "### Conclusion".into(), String::new(), clip(&kept.exchange.answer, 3000)]);
+                parts.extend([String::new(), "### Conclusion".into(), String::new(), clip_middle(&kept.exchange.answer, 3000)]);
             }
         }
     }
@@ -1745,6 +1787,63 @@ mod tests {
         assert_eq!(blocks.len(), 3);
         assert_eq!(blocks[0].heading, "Done");
         assert!(blocks[2].text.contains("- not an item"));
+    }
+
+    fn parse_lines(name: &str, lines: &[Value]) -> Session {
+        let path = std::env::temp_dir().join(format!("sessionkit-{name}-{}.jsonl", std::process::id()));
+        std::fs::write(&path, lines.iter().map(|line| line.to_string() + "\n").collect::<String>()).unwrap();
+        let session = parse_session(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        session
+    }
+
+    fn prompt(text: &str, second: u32) -> Value {
+        json!({"type": "user", "timestamp": format!("2026-01-01T00:00:{second:02}Z"), "message": {"content": text}})
+    }
+
+    fn assistant(id: &str, second: u32, content: Value) -> Value {
+        json!({"type": "assistant", "timestamp": format!("2026-01-01T00:00:{second:02}Z"), "message": {"id": id, "content": content}})
+    }
+
+    #[test]
+    fn a_turn_keeps_every_assistant_text() {
+        let session = parse_lines("texts", &[
+            prompt("what now?", 1),
+            assistant("m1", 2, json!([{"type": "text", "text": "I propose to split the module."}])),
+            assistant("m2", 3, json!([{"type": "tool_use", "name": "Read", "input": {"file_path": "/a.rs"}}])),
+            assistant("m3", 4, json!([{"type": "text", "text": "Done reading."}])),
+            // the same message again, as some transcripts repeat it
+            assistant("m1", 2, json!([{"type": "text", "text": "I propose to split the module."}])),
+        ]);
+        assert_eq!(session.exchanges[0].answer, "I propose to split the module.\n\nDone reading.");
+        assert_eq!(session.exchanges[0].conclusion, "Done reading.");
+        assert_eq!(session.exchanges[0].tool_calls, 1);
+    }
+
+    #[test]
+    fn a_question_to_the_person_reaches_the_answer() {
+        let session = parse_lines("question", &[
+            prompt("scope?", 1),
+            assistant("m1", 2, json!([{"type": "tool_use", "name": "AskUserQuestion", "input": {"questions": [
+                {"question": "Which points go in?", "header": "Scope", "multiSelect": false,
+                 "options": [{"label": "The eight clear ones", "description": "x"}, {"label": "Config only", "description": "y"}]},
+            ]}}])),
+            assistant("m2", 3, json!([{"type": "tool_use", "name": "ExitPlanMode", "input": {"plan": "# Plan\nStep one."}}])),
+            assistant("m3", 4, json!([{"type": "text", "text": "Started."}])),
+        ]);
+        assert_eq!(
+            session.exchanges[0].answer,
+            "Asked the person: Which points go in? Options: The eight clear ones / Config only\n\nProposed plan:\n# Plan\nStep one.\n\nStarted."
+        );
+    }
+
+    #[test]
+    fn a_clipped_conclusion_keeps_its_proposal() {
+        let answer = format!("{} Shall I split the module?", "Long account of the work. ".repeat(200));
+        let clipped = clip_middle(&answer, 3000);
+        assert!(len(&clipped) <= 3000 + " […] ".len());
+        assert!(clipped.starts_with("Long account"));
+        assert!(clipped.ends_with("Shall I split the module?"));
     }
 
     #[test]
