@@ -52,3 +52,4 @@ test("a fallback to the summary asks nothing", async ($, on) => {
   await settle();
   expect(seen.submitted).toEqual([]);
 });
+

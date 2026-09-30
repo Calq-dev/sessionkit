@@ -49,11 +49,11 @@ const KEEP_THRESHOLD: f64 = 0.5; // for the call question
 // The result question answers around 0.7 for most outputs; at 0.78 it kept 40% of the outputs that
 // came back and 10% of those that did not, on held-out cuts.
 const KEEP_RESULT_THRESHOLD: f64 = 0.78;
-const PRESERVE_RECENT_MESSAGES: usize = 6;
+pub const PRESERVE_RECENT_MESSAGES: usize = 6;
 const MAX_STATE_TOKENS: usize = 25_000;
 const MAX_REQUEST_TOKENS: usize = 30_000; // state plus questions, under Jev's 32k request limit
 const REQUEST_OVERHEAD_TOKENS: usize = 20;
-const TRUNCATE_HEAD_CHARS: usize = 300;
+pub const TRUNCATE_HEAD_CHARS: usize = 300;
 const MIN_REDUCTION: f64 = 0.25; // below this the summary of Claude Code frees more
 const CONCURRENCY: usize = 6;
 const INPUT_CHARS: [usize; 3] = [1000, 200, 60];
@@ -97,24 +97,24 @@ const STATE_CONTEXT: &str = "A coding assistant conversation is being compacted 
 // ---------------------------------------------------------------- messages
 
 pub struct ToolUse {
-    id: String,
-    tool: String,
-    input: Value,
-    text: Option<String>,
-    is_error: bool,
+    pub id: String,
+    pub tool: String,
+    pub input: Value,
+    pub text: Option<String>,
+    pub is_error: bool,
 }
 
 pub struct ToolResult {
-    id: String,
-    text: String,
-    is_error: bool,
+    pub id: String,
+    pub text: String,
+    pub is_error: bool,
 }
 
 pub struct Message {
-    role: String,
-    text: String,
-    uses: Vec<ToolUse>,
-    results: Vec<ToolResult>,
+    pub role: String,
+    pub text: String,
+    pub uses: Vec<ToolUse>,
+    pub results: Vec<ToolResult>,
 }
 
 /// A message in the shape of Claude Code's SessionMessage.
@@ -294,7 +294,7 @@ fn history(messages: &[Message], calls: &[ToolCall], input_chars: usize) -> Vec<
 }
 
 /// The last three prompts of the person: what the conversation is about now.
-fn goal(messages: &[Message]) -> String {
+pub fn goal(messages: &[Message]) -> String {
     let prompts: Vec<String> = messages.iter()
         .filter(|m| m.role == "user" && !js::trim(&m.text).is_empty() && m.results.is_empty())
         .map(|m| truncate(&m.text, 500)).collect();
@@ -702,7 +702,7 @@ fn read_transcript(path: &PathBuf) -> Result<Vec<Message>> {
 
 /// Every stretch of the conversation between two compaction boundaries, oldest first: each is a
 /// conversation as the hook would have been handed it at its end.
-fn read_segments(path: &PathBuf) -> Result<Vec<Vec<Message>>> {
+pub fn read_segments(path: &PathBuf) -> Result<Vec<Vec<Message>>> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let entries: Vec<Value> = text.lines().filter_map(js::parse).filter(|e| !js::truthy(e.get("isSidechain"))).collect();
     let mut segments = vec![Vec::new()];

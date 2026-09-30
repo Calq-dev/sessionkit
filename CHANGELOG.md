@@ -2,6 +2,57 @@
 
 All notable changes to sessionkit, called jev-start before 0.3.0. The format follows [Keep a Changelog](https://keepachangelog.com).
 
+## [0.16.0] - 2026-09-30
+
+### Added
+
+- **An optional output style, `sessionkit-robot`.** Terse and neutral; after a tool call that
+  taught it something, the agent writes one `Noted:` line with the exact facts, which a
+  compaction without summary keeps. Pick it with `/output-style sessionkit-robot`; nothing
+  switches it on by itself. `sessionkit trim --articulation [--days n]` measures how many of the
+  facts an agent used after a possible compaction were in its own text: 7.5% over 93 sessions
+  before the style, locally and free.
+- **A large warm session asks to compact first.** Above 300K tokens of context
+  (`SESSIONKIT_COMPACT_ABOVE`), the dialog shows what a call costs now and after /compact.
+  *Compact first* runs /compact and then sends the message; *Always at 300K* also sets Claude
+  Code's `/autocompact`, so it compacts by itself from then on, also in auto mode. Simulated over
+  earlier sessions, compacting at 300K saved about half of the cache reads.
+- **An Edit refused for an unread file is read and tried again.** Claude Code refuses an Edit of
+  a file no Read in the session has seen, also when the agent read it with `cat` or `sed`, or
+  before a compaction: 98 of 8,635 edits in the transcripts here, after which the agent mostly
+  read the whole file again. The plugin now does that Read itself, through the engine, so the
+  text stays out of the conversation, and retries the Edit, whose `old_string` must still match
+  exactly once. Not for `replace_all` or Write.
+- **A teammate's report that arrives twice is left out the second time.** When a teammate goes
+  idle, its notification carries its report again, after it already sent it with SendMessage:
+  101 of 616 such notifications in the transcripts here, and 75 of them cost the lead a turn at a
+  median context of 371K tokens. The notification still arrives; its repeated result becomes one
+  line that names the earlier message.
+- **Outline first for large files, an option.** With *Outline first for large files* on in
+  `/config`, the first whole read of a file of 400 lines or more shows its first 20 lines and its
+  declarations and headings with their line numbers; a second whole read gets all of it. Off by
+  default until it is tried.
+- **`sessionkit peers`: hand work to a warm session.** Lists the Claude Code sessions running on
+  this machine, from `~/.claude/sessions`, with status, context, cache read per call and the time
+  the cache stays warm. Given a task, Jev judges per idle, warm session whether its work covers
+  the task (0.7 or more, not yet measured), and the output names the session to send it to with
+  SendMessage. The skill tells the agent to run it before it spawns a subagent.
+- **Warm peers in the shadow log of a subagent.** `hook agent-route` also logs, under
+  `warm_peers`, the idle, warm sessions in the same folder and Jev's fit for the subagent's task.
+- **`sessionkit usage --tools`: which tools fill the context.** Per tool the number and size of
+  its results, the part in results above 10k and 20k characters, and how often later calls read
+  them again from the cache, up to the next compaction. Only tool names and numbers, so the
+  output can be shared; it decides what sessionkit trims next.
+- **`sessionkit trim --measure`: would cutting large tool results early keep what is needed?**
+  Splits large Bash and Read results in earlier transcripts into blocks, lets Jev judge them, and
+  compares that with what the assistant used afterwards. On 150 results one Choice over the
+  blocks reached an AUC of 0.61 inside a result, and a Noul per block ranked used blocks below
+  unused ones, so nothing cuts results live.
+- **`sessionkit trim --outline`: what an outline of a large file first would cost.** For every
+  whole read of a file of 400 lines or more, it compares the file with an outline (the first
+  lines, then every declaration and heading with its line number) plus the parts the assistant
+  used afterwards. Local and free.
+
 ## [0.15.0] - 2026-09-30
 
 ### Added

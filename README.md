@@ -62,6 +62,7 @@ sessionkit usage                     # everything
 sessionkit usage --days 7            # the last week
 sessionkit usage --project lankquote # one project
 sessionkit usage --json              # the numbers as JSON
+sessionkit usage --tools             # which tools fill the context
 ```
 
 It reads the transcripts under `~/.claude/projects`, main sessions and the subagents stored
@@ -77,6 +78,21 @@ used. A model without a known price is named, and its tokens are left out of the
 Claude Code's own `cost-state` per session is not used. It counts per process, so a resumed
 session starts again at zero; compared with the transcripts it came out both too low and too
 high.
+
+**`--tools`** shows which tools fill the context. Per tool: how many results, their size in
+tokens (the text, at 4 characters a token; images are left out), the part that came in results
+above 10k and 20k characters, and **re-read**: each result times the API calls after it, up to
+the next compaction. Every such call reads the result again from the cache, so re-read is where
+the cache reads go. MCP tools appear by their server's name. The output holds only tool names and
+numbers, so you can share it as it is.
+
+```text
+tool                      results   tokens  share    avg  >10k  >20k   re-read
+------------------------------------------------------------------------------
+Bash                       17,093     8.2M    60%    481   30%   10%       75%
+Read                        2,986     4.0M    29%     1K   67%   49%       15%
+mcp: playwright             2,068     341K     2%    165    9%    4%        3%
+```
 
 **Cold cache rebuilds** are a heuristic: a call after a pause of more than 5 minutes that
 writes at least 20k tokens to the cache and reads less than it writes.
@@ -142,6 +158,25 @@ apart.
   hook (`hook prompt`) acts alone: where it can it closes the session and continues in a fresh
   one, elsewhere it stops the message once; send it again to go ahead.
 
+- **When a warm session has grown large** (300K tokens by default; `SESSIONKIT_COMPACT_ABOVE`),
+  the dialog asks whether to compact first: every message re-reads the whole context, and it
+  shows the cost per call now and after /compact. A simulation over earlier sessions found that
+  compacting at 300K saves about half of the cache reads, more than acting on a cold cache alone.
+  **Compact first** runs /compact and then sends your message; **Always at 300K** runs Claude
+  Code's own `/autocompact 300000` as well, so it compacts by itself from then on, also in auto
+  mode, where no new message comes in to ask at. It asks once per size, and again only when the
+  context has grown by half; not at all once you set `autoCompactWindow` yourself.
+
+- **An output style to pick, if you like it**: `/output-style sessionkit-robot`. Terse and
+  neutral, with no personality, and after a tool call that taught it something the agent writes
+  one `Noted:` line with the exact paths, names, error lines and decisions. A compaction without
+  summary keeps all text, so those facts survive it while the tool output goes. Measured on the
+  transcripts here: of the facts an agent used after a possible compaction, 8.5% were in its own
+  text, 51% in a tool input that stays, and 41% only in tool output that would go. Not forced:
+  sessionkit works the same with any style. `sessionkit trim --articulation --days 7` measures
+  it again for your own sessions, locally and free, with the number of `Noted:` lines per tool
+  call as what the notes cost.
+
 - **After the first large read** (400 lines or more, the whole file): one line in the context
   tells the agent that `sessionkit ask` answers a question about a file without reading it, and
   `--find` names the line to read. Agents read whole files out of habit; a skill alone did not
@@ -149,6 +184,32 @@ apart.
   through Jev, with ask-jev as MCP tools as well as with the skill. Once per session and per
   subagent, so it costs a few hundred tokens; the read itself goes ahead unchanged. A function
   hook on `tool.call` in the plugin, like the dialog above.
+
+  **Outline first** is an option, off by default: turn on *Outline first for large files* in
+  `/config`. Then the first whole read of such a file shows lines 1 to 20 and, below them, every
+  declaration and heading with its line number (`sessionkit trim --declarations`), and the agent
+  reads the parts it needs with offset and limit. A second whole read of the same file gets all
+  of it. Claude Code has read the whole file either way, so an Edit of it is allowed. Measured
+  with `sessionkit trim --outline` on 310 whole reads of large files: the outline is a median 9%
+  of the file, and the outline plus the parts used afterwards 12% of it. That measure misses a
+  read done only to understand the code, so try it before you trust it.
+
+- **When an Edit is refused because the file has not been read**: Claude Code allows an Edit
+  only of a file that a Read in this session has seen. A file read with `cat` or `sed`, or before
+  a compaction, does not count, and in the transcripts here that was 1.1% of all edits; mostly
+  the agent then read the whole file again. The plugin does the Read itself, through the engine,
+  so the file counts as read without its text entering the conversation, and tries the Edit
+  again. The Edit stays safe: its `old_string` must still match the file exactly, once. Not for
+  `replace_all`, nor for Write, which replaces the whole file. A function hook on `tool.call`.
+
+- **When a teammate's report arrives twice**: a teammate sends its report with SendMessage, and
+  when it goes idle its notification carries the same text again. The lead reads it twice and
+  often spends a turn saying it already had it: in the transcripts here, 101 of 616 idle
+  notifications with a result repeated a message from the same teammate, and 75 were followed
+  by a turn without tools, at a median context of 371K tokens. The notification still arrives,
+  so a lead that waits for it still wakes; only a result that shares 60% of its words with one of
+  the teammate's last five messages becomes one line naming that message. A function hook on
+  `session.receive`, tested against the engine's test kit but not yet in a live team.
 
 - **When a subagent starts**, in shadow: Jev says which model and effort level would have been
   enough for its task, and `hook agent-route` logs that beside the model it got, in
@@ -185,6 +246,33 @@ owners opens the next session:
   it finds the prompt for this terminal. It only tests for a file, so your prompt stays fast.
 
 Without either, the hook stops the message once, and `next` prints the command to run.
+
+### Hand work to a warm session
+
+An idle session whose cache is still warm holds context you already paid for. `sessionkit peers`
+lists the Claude Code sessions running on this machine, from `~/.claude/sessions`, with their
+context, what one call costs in cache reads, and how long the cache stays warm. Given a task,
+Jev judges per idle, warm session whether its work so far covers the task:
+
+```text
+$ sessionkit peers "deploy commit 053cea4 together with ca0b16c"
+Running sessions: status, context, cache read per call, cache left, fit.
+  lmnl-56         idle    654K  $0.131/call  warm 55m  fit 0.80
+  lmnl-2c         idle    235K  $0.047/call      cold
+  lmnl-e8         busy    326K  $0.065/call  warm 59m
+
+lmnl-56 fits. Send it the task with SendMessage to "lmnl-56"; it works in its own terminal, in parallel with you.
+Every call it makes reads its whole context: $0.131 per call. For a long task, ask it for a briefing and give that to a subagent.
+```
+
+The skill tells the agent to run it before it spawns a subagent, so work goes to a session that
+knows it instead of a fresh one that reads its way in. A warm session is not always cheaper:
+every call reads its whole context, so for a long task a briefing from it plus a subagent costs
+less. The fit line of 0.7 is not measured yet. The plugin's `agent.spawn` hook logs, in shadow,
+which warm peers would have fit every subagent, in `~/.cache/sessionkit/agent-routes.jsonl`
+under `warm_peers`. Jev costs about $0.0001 per session judged.
+
+`~/.claude/sessions` is not a public contract of Claude Code; its format can change.
 
 Nothing here reaches Claude's context: the status line, `systemMessage` and the block `reason`
 are shown to you only, so the checks cost no tokens.

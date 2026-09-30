@@ -16,6 +16,7 @@
 use crate::Result;
 use crate::cache::{CacheState, FIVE_MINUTES, cache_state, read_tail};
 use crate::js::{self, fixed, num};
+use crate::peers;
 use crate::next::{env_pid, handoff_key, leave_handoff, ps_field, terminate, transcript_of};
 use crate::start::{ROUTE_CONTINUE, Scored, ask_choice, key_at_hand, read_session, route_to_session};
 use crate::usage::{home, price_of, read_price};
@@ -48,11 +49,11 @@ fn read_input() -> Value {
     js::parse(&text).unwrap_or(json!({}))
 }
 
-fn tokens(value: f64) -> String {
+pub fn tokens(value: f64) -> String {
     if value >= 1e6 { format!("{}M", fixed(value / 1e6, 1)) } else { format!("{}K", js::number(js::round(value / 1e3))) }
 }
 
-fn usd(value: f64) -> String {
+pub fn usd(value: f64) -> String {
     if value >= 10.0 {
         format!("${}", fixed(value, 0))
     } else if value >= 1.0 {
@@ -62,7 +63,7 @@ fn usd(value: f64) -> String {
     }
 }
 
-fn minutes(ms: f64) -> String {
+pub fn minutes(ms: f64) -> String {
     if ms >= 3600000.0 {
         format!("{}h{:0>2}", js::number((ms / 3600000.0).floor()), js::number(((ms % 3600000.0) / 60000.0).floor()))
     } else {
@@ -384,6 +385,62 @@ fn is_new_work(transcript: &str, prompt: &str) -> bool {
     route_to_session(prompt, &[candidate], false).is_ok_and(|route| route.session.is_none() && route.probability >= ROUTE_CONTINUE)
 }
 
+/// Measured: 44 compactions left a median 5.4% of the context; rounded up, since a session keeps
+/// growing after one.
+const COMPACTED_SHARE: f64 = 0.1;
+const LARGE_AGAIN: f64 = 1.5; // ask again once the context has grown this much since the last question
+
+/// A warm session whose context is above the line: every message re-reads all of it. Simulated
+/// over earlier sessions, compacting at 300K saved about half of the cache reads.
+fn large_state(input: &Value) -> Option<CacheState> {
+    let state = transcript_state(input)?;
+    (state.warm && state.context >= compact_above() && !own_auto_compact()).then_some(state)
+}
+
+fn compact_above() -> f64 {
+    setting("COMPACT_ABOVE", 300_000.0)
+}
+
+/// Whether the person set Claude Code's own auto-compact window (/autocompact <tokens>): then it
+/// compacts by itself, and asking again would only get in the way.
+fn own_auto_compact() -> bool {
+    let settings = std::fs::read_to_string(home().join(".claude").join("settings.json")).ok().and_then(|text| js::parse(&text));
+    settings.as_ref().and_then(|s| s.get("autoCompactWindow")).is_some_and(|w| w.as_f64().is_some())
+}
+
+fn large_ack_file(id: &str) -> PathBuf {
+    cache_dir().join("large-ack").join(id)
+}
+
+/// Asked before, at a context this one has not yet outgrown by LARGE_AGAIN.
+fn large_acked(id: &str, state: &CacheState) -> bool {
+    std::fs::read_to_string(large_ack_file(id)).is_ok_and(|text| state.context < js::parse_number(Some(&text)) * LARGE_AGAIN)
+}
+
+fn large_ack(id: &str, state: &CacheState) -> Result<()> {
+    let file = large_ack_file(id);
+    std::fs::create_dir_all(file.parent().unwrap()).map_err(|e| e.to_string())?;
+    std::fs::write(&file, js::number(state.context)).map_err(|e| e.to_string())
+}
+
+/// The question for a large warm session, asked once per size: the per-call cost now and after /compact.
+fn large_check(id: &str, state: &CacheState) -> Result<Value> {
+    large_ack(id, state)?;
+    let per_call = state.per_call.unwrap_or(f64::NAN);
+    let after = (state.context * COMPACTED_SHARE).max(15_000.0);
+    Ok(json!({
+        "cold": false,
+        "large": true,
+        "at": tokens(compact_above()),
+        "window": js::round(compact_above()),
+        "question": format!("This session has {} tokens of context, and every message re-reads all of it: {} a call. \
+            After /compact it is about {} ({} a call), so 100 more calls cost about {} instead of {}. Compacting \
+            keeps all text and drops tool output that is no longer needed. Compact first?",
+            tokens(state.context), usd(per_call), tokens(after), usd(per_call * after / state.context),
+            usd(100.0 * per_call * after / state.context), usd(100.0 * per_call)),
+    }))
+}
+
 /// For the plugin's prompt.submit hook: is this session cold and expensive, and can a fresh
 /// session be opened in this terminal? The dialog's question comes from here, and the route of
 /// the fresh session: continue this one, or, for new work, start from the sessions that fit it.
@@ -391,7 +448,14 @@ fn cold_check(input: &Value) -> Result<Value> {
     let prompt = js::str_of(input, "prompt");
     let input = session_input(input);
     let id = session_id(&input);
-    let Some(state) = cold_state(&input).filter(|state| !acked(&id, state)) else { return Ok(json!({"cold": false})) };
+    let Some(state) = cold_state(&input).filter(|state| !acked(&id, state)) else {
+        if !prompt.starts_with('/') {
+            if let Some(state) = large_state(&input).filter(|state| !large_acked(&id, state)) {
+                return large_check(&id, &state);
+            }
+        }
+        return Ok(json!({"cold": false}));
+    };
     let fresh = match claude_pid() {
         Some(pid) => handoff_key(pid)?.is_some(),
         None => false,
@@ -509,6 +573,7 @@ fn agent_route(input: &Value) -> Result<Value> {
         "proposal": {"model": model, "effort": effort},
         "probabilities": {"model": models, "effort": efforts},
         "tokens": num(used_model + used_effort),
+        "warm_peers": peers::shadow(js::str_of(input, "session_id"), js::str_of(input, "prompt")),
     });
     let file = cache_dir().join("agent-routes.jsonl");
     std::fs::create_dir_all(cache_dir()).map_err(|e| e.to_string())?;

@@ -1,6 +1,6 @@
 // The cold-cache dialog against the engine: sessionkit, the session and the person are stood in
 // for beneath the plugin. Run with: claude plugin test plugin
-import { expect, test } from "claude-code/testing";
+import { expect, mock, test } from "claude-code/testing";
 
 const COLD = {
   cold: true,
@@ -17,7 +17,11 @@ function world(on, check, answer) {
   on("process.run", (_$, e) => {
     seen.runs.push(e.argv.slice(2).join(" "));
     seen.inputs.push(JSON.parse(e.init.stdin));
-    const out = e.argv[2] === "cold-check" ? check : { ok: true };
+    const command = e.argv.slice(1).join(" ");
+    const out = e.argv[2] === "cold-check" ? check
+      : command === "compact --hook" ? { plan: [{ keep: 0 }], summary: "kept 1/1 messages", counts: { cut: 1, dropped: 2 } }
+      : command === "hook compacted" ? { found: true, before: 463000, after: 41000 }
+      : { ok: true };
     return { value: { exitCode: 0, stdout: JSON.stringify(out), stderr: "" } };
   });
   on("tool.call", { tool: "AskUserQuestion" }, (_$, e) => {
@@ -35,8 +39,17 @@ function world(on, check, answer) {
     seen.entered.push(e.text);
     return { text: e.text };
   });
+  on("ui.log", (_$, e) => { seen.logs = [...(seen.logs ?? []), e.text]; return { value: undefined }; });
+  on("ui.toast", () => ({ value: undefined }));
+  on("session.compact", () => ({ messages: [] }));
+  on("command.run", (_$, e) => {
+    seen.commands = [...(seen.commands ?? []), `${e.command} ${e.args}`.trim()];
+    return { text: "" };
+  });
   return seen;
 }
+
+const LARGE = { cold: false, large: true, at: "300K", window: 300000, question: "This session has 463K tokens of context. Compact first?" };
 
 const typed = (text) => ({ text, wait: false, origin: { kind: "composer" } });
 
@@ -89,4 +102,33 @@ test("a message from a peer is not asked about", async ($, on) => {
   const seen = world(on, COLD, "Continue here");
   await $.prompt.submit({ text: "hello", wait: false, origin: { kind: "peer", from: "other" } });
   expect(seen.runs).toEqual([]);
+});
+
+test("compact first: /compact runs after the hook, and the message goes out after it", async ($, on) => {
+  const clock = mock.clock(on);
+  const seen = world(on, LARGE, "Compact first");
+  const result = await $.prompt.submit(typed("go on"));
+  expect(seen.asked).toEqual([["Compact first", "Continue", "Always at 300K"]]);
+  expect(result.drop).toContain("compacting first");
+  await clock.settle();
+  expect(seen.commands).toEqual(["compact"]);
+  await $.session.compact({ trigger: "manual", messages: [{ role: "user", text: "hello", toolUses: [] }] });
+  await clock.settle();
+  expect(seen.entered).toContain("go on");
+  expect((seen.logs ?? []).filter((line) => line.includes("did not start"))).toEqual([]);
+});
+
+test("always: Claude Code compacts by itself from now on, and this time too", async ($, on) => {
+  const clock = mock.clock(on);
+  const seen = world(on, LARGE, "Always at 300K");
+  await $.prompt.submit(typed("go on"));
+  await clock.settle();
+  expect(seen.commands).toEqual(["autocompact 300000", "compact"]);
+});
+
+test("a large session can go on as it is", async ($, on) => {
+  const seen = world(on, LARGE, "Continue");
+  const result = await $.prompt.submit(typed("go on"));
+  expect(result.text).toBe("go on");
+  expect(seen.commands).toBeUndefined();
 });

@@ -1,21 +1,56 @@
 // sessionkit's choice before a message to a cold session: when the prompt cache has expired and
 // writing the context again is expensive, ask in Claude Code's own dialog whether to go on here
-// or in a fresh session with only what matters. The dialog is the engine's, so asking costs no
+// or in a fresh session with only what matters. In a warm session whose context has grown large
+// (300K tokens by default), ask whether to compact first, since every message re-reads it all. The dialog is the engine's, so asking costs no
 // model call. `sessionkit hook cold-check` decides whether to ask and words the question;
 // `sessionkit hook cold-choice` acts on the answer. When anything fails, the message goes through,
 // and the settings hook `sessionkit hook prompt` still stops it once.
 //
 // sessionkit setup writes this file with the path of sessionkit on this machine.
 
+import { waiting } from "./waiting.js";
+
 const SESSIONKIT = "__SESSIONKIT__";
 const TIMEOUT_MS = 10_000;
 
 const FRESH = "Fresh session";
 const STOP = "Stop";
+const COMPACT = "Compact first";
+const CONTINUE = "Continue";
 
 async function sessionkit($, args, input) {
   const run = await $.process.run([SESSIONKIT, "hook", ...args], { stdin: JSON.stringify(input), timeoutMs: TIMEOUT_MS });
   return JSON.parse(run.stdout);
+}
+
+/**
+ * A warm session with a large context: compact first, then send the message; or go on as it is;
+ * or let Claude Code compact by itself from now on, at about 300K (its /autocompact), which also
+ * fits a session in auto mode that runs on without new messages. A command cannot run from this
+ * hook, which holds the turn, so it runs just after it; compact.js sends the message after /compact.
+ */
+async function large($, event, next, check) {
+  const ALWAYS = `Always at ${check.at}`;
+  let choice;
+  try {
+    choice = await $.ui.ask(check.question, { options: [COMPACT, CONTINUE, ALWAYS], header: "Large context" });
+  } catch {
+    choice = CONTINUE; // dismissed
+  }
+  if (choice === CONTINUE) return next(event);
+  const commands = choice === ALWAYS ? [["autocompact", String(check.window)], ["compact", ""]] : [["compact", ""]];
+  waiting.text = event.text;
+  $.clock.after(0, async () => {
+    try {
+      for (const [command, args] of commands) await $.command.run({ command, args });
+    } catch (error) {
+      waiting.text = null;
+      $.ui.log(`sessionkit: /${commands.at(-1)[0]} did not start (${error instanceof Error ? error.message : String(error)})`);
+      await $.prompt.fill({ text: event.text });
+      $.ui.toast("sessionkit: could not start /compact; your message is back in the prompt box.");
+    }
+  });
+  return { drop: "sessionkit: compacting first; your message goes out once that is done." };
 }
 
 /** @type {import('claude-code').Register} */
@@ -30,6 +65,7 @@ export const register = (on) => {
     } catch {
       return next(event);
     }
+    if (check.large) return large($, event, next, check);
     if (!check.cold) return next(event);
 
     const here = `Continue here (${check.cost})`;

@@ -9,6 +9,8 @@
 //
 // sessionkit setup writes this file with the path of sessionkit on this machine.
 
+import { waiting } from "./waiting.js";
+
 const SESSIONKIT = "__SESSIONKIT__";
 const TIMEOUT_MS = 180_000;
 const COMPACTED_TIMEOUT_MS = 15_000;
@@ -32,6 +34,17 @@ async function announce($, since, counts) {
       `that the compaction worked, with these numbers, in the language of this conversation. Then propose in a sentence ` +
       `or two how to go on with the work in progress, or ask how to go on when that is unclear. Run no tools for this answer.`,
   });
+}
+
+/** The message the person chose to send after this /compact, once Claude Code has written it. */
+async function sendWaiting($, since) {
+  const text = waiting.text;
+  waiting.text = null;
+  await $.process.run([SESSIONKIT, "hook", "compacted"], {
+    stdin: JSON.stringify({ session_id: await $.session.id(), since }),
+    timeoutMs: COMPACTED_TIMEOUT_MS,
+  }).catch(() => undefined);
+  await $.prompt.submit({ text });
 }
 
 /** The messages without the engine's handles and stored records: what sessionkit reads. */
@@ -73,6 +86,12 @@ function apply(messages, plan) {
 export const register = (on) => {
   on("session.compact", async ($, event, next) => {
     const since = Date.now();
+    // Claude Code's own summary; a message the person is waiting to send goes out after it.
+    const summarized = async () => {
+      const result = await next(event);
+      if (waiting.text !== null && !event.agentId) sendWaiting($, since).catch(() => undefined);
+      return result;
+    };
     // A precompute runs ahead of time; its outcome is for the log, not for a toast.
     const say = (text) => {
       $.ui.log(`sessionkit: ${text}`);
@@ -91,16 +110,18 @@ export const register = (on) => {
       }
       if (!answer.plan) {
         say(`summary as usual (${answer.fallback})`);
-        return next(event);
+        return summarized();
       }
       say(answer.summary);
-      if (event.trigger === "manual" && !event.agentId && answer.counts) {
+      if (waiting.text !== null && !event.agentId) {
+        sendWaiting($, since).catch((error) => $.ui.log(`sessionkit: message after /compact not sent (${error instanceof Error ? error.message : String(error)})`));
+      } else if (event.trigger === "manual" && !event.agentId && answer.counts) {
         announce($, since, answer.counts).catch((error) => $.ui.log(`sessionkit: no message after /compact (${error instanceof Error ? error.message : String(error)})`));
       }
       return { messages: apply(event.messages, answer.plan) };
     } catch (error) {
       say(`summary as usual (${error instanceof Error ? error.message : String(error)})`);
-      return next(event);
+      return summarized();
     }
   });
 };
