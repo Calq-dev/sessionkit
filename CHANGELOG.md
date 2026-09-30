@@ -6,6 +6,16 @@ All notable changes to sessionkit, called jev-start before 0.3.0. The format fol
 
 ### Added
 
+- **An Edit refused for an unread file is read and tried again.** Claude Code refuses an Edit of
+  a file no Read in the session has seen, also when the agent read it with `cat` or `sed`, or
+  before a compaction: 98 of 8,635 edits in the transcripts here, after which the agent mostly
+  read the whole file again. The plugin now does that Read itself, through the engine, so the
+  text stays out of the conversation, and retries the Edit, whose `old_string` must still match
+  exactly once. Not for `replace_all` or Write.
+- **Outline first for large files, an option.** With *Outline first for large files* on in
+  `/config`, the first whole read of a file of 400 lines or more shows its first 20 lines and its
+  declarations and headings with their line numbers; a second whole read gets all of it. Off by
+  default until it is tried.
 - **`sessionkit peers`: hand work to a warm session.** Lists the Claude Code sessions running on
   this machine, from `~/.claude/sessions`, with status, context, cache read per call and the time
   the cache stays warm. Given a task, Jev judges per idle, warm session whether its work covers

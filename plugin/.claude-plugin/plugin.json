@@ -2,5 +2,13 @@
   "name": "sessionkit",
   "version": "__VERSION__",
   "description": "Compaction without a summary: Jev decides which tool outputs are still needed, all text stays verbatim.",
-  "license": "MIT"
+  "license": "MIT",
+  "userConfig": {
+    "readOutline": {
+      "type": "boolean",
+      "title": "Outline first for large files",
+      "description": "The first whole read of a file of 400 lines or more shows its first 20 lines and every declaration and heading with its line number. The agent reads the parts it needs; a second whole read of the file gets all of it.",
+      "default": false
+    }
+  }
 }

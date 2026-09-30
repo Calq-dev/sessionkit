@@ -166,6 +166,23 @@ apart.
   subagent, so it costs a few hundred tokens; the read itself goes ahead unchanged. A function
   hook on `tool.call` in the plugin, like the dialog above.
 
+  **Outline first** is an option, off by default: turn on *Outline first for large files* in
+  `/config`. Then the first whole read of such a file shows lines 1 to 20 and, below them, every
+  declaration and heading with its line number (`sessionkit trim --declarations`), and the agent
+  reads the parts it needs with offset and limit. A second whole read of the same file gets all
+  of it. Claude Code has read the whole file either way, so an Edit of it is allowed. Measured
+  with `sessionkit trim --outline` on 310 whole reads of large files: the outline is a median 9%
+  of the file, and the outline plus the parts used afterwards 12% of it. That measure misses a
+  read done only to understand the code, so try it before you trust it.
+
+- **When an Edit is refused because the file has not been read**: Claude Code allows an Edit
+  only of a file that a Read in this session has seen. A file read with `cat` or `sed`, or before
+  a compaction, does not count, and in the transcripts here that was 1.1% of all edits; mostly
+  the agent then read the whole file again. The plugin does the Read itself, through the engine,
+  so the file counts as read without its text entering the conversation, and tries the Edit
+  again. The Edit stays safe: its `old_string` must still match the file exactly, once. Not for
+  `replace_all`, nor for Write, which replaces the whole file. A function hook on `tool.call`.
+
 - **When a subagent starts**, in shadow: Jev says which model and effort level would have been
   enough for its task, and `hook agent-route` logs that beside the model it got, in
   `~/.cache/sessionkit/agent-routes.jsonl`. Nothing changes the spawn, and it does not wait. The

@@ -28,6 +28,7 @@ needs: Jev (TypeSafe) judges the blocks of lines of large Bash and Read results 
 transcripts, and the judgment is compared with what the assistant used afterwards.
 
   --measure   the number of results to judge (default 40; costs money)
+  --declarations  for the plugin: print the outline lines of the text on stdin as JSON
   --outline   what an outline of a large file first, and reading the used parts after, would
               cost against reading the whole file (local, free)
   --verbose   with --measure: a line per judged block
@@ -385,21 +386,31 @@ fn whole_file(call: &ToolUse, text: &str) -> bool {
     whole && text.split('\n').count() >= OUTLINE_MIN_LINES
 }
 
-/// What the agent would get instead of the file: its first lines, then every line that declares
-/// something or is a heading, with its line number.
-pub fn outline_of(text: &str) -> String {
-    let lines: Vec<&str> = text.split('\n').collect();
-    let mut out: Vec<String> = lines[..OUTLINE_HEAD_LINES.min(lines.len())].iter().map(|l| l.to_string()).collect();
-    for (i, line) in lines.iter().enumerate().skip(OUTLINE_HEAD_LINES) {
+/// Every line after the first OUTLINE_HEAD_LINES that declares something or is a heading, with its
+/// line number: from Read's own numbering when the text has it, else counted from 1.
+pub fn declarations(text: &str) -> Vec<String> {
+    text.split('\n').enumerate().skip(OUTLINE_HEAD_LINES).filter_map(|(i, line)| {
         let (number, plain) = match LINE_NUMBER.captures(line) {
             Some(c) => (c[1].to_string(), &line[c.get(0).unwrap().end()..]),
-            None => ((i + 1).to_string(), *line),
+            None => ((i + 1).to_string(), line),
         };
-        if DECLARATION.is_match(plain) {
-            out.push(format!("{number}: {}", js::clip(js::trim_end(plain), OUTLINE_LINE_CHARS)));
-        }
-    }
+        DECLARATION.is_match(plain).then(|| format!("{number}: {}", js::clip(js::trim_end(plain), OUTLINE_LINE_CHARS)))
+    }).collect()
+}
+
+/// What the agent would get instead of the file: its first lines, then its declarations.
+pub fn outline_of(text: &str) -> String {
+    let mut out: Vec<String> = text.split('\n').take(OUTLINE_HEAD_LINES).map(str::to_string).collect();
+    out.extend(declarations(text));
     out.join("\n")
+}
+
+/// sessionkit trim --declarations: for the plugin's read hook, the file's text on stdin.
+fn print_declarations() -> Result<()> {
+    let mut text = String::new();
+    std::io::Read::read_to_string(&mut std::io::stdin(), &mut text).map_err(|e| e.to_string())?;
+    println!("{}", js::stringify(&json!({"head": OUTLINE_HEAD_LINES, "declarations": declarations(&text)})));
+    Ok(())
 }
 
 /// sessionkit trim --outline: what an outline first, and reading the used blocks after, would
@@ -451,6 +462,7 @@ fn measure_outline(max: usize) -> Result<()> {
 
 pub fn trim_main(argv: &[String]) -> Result<()> {
     match argv.first().map(String::as_str) {
+        Some("--declarations") => print_declarations(),
         Some("--outline") => measure_outline(argv.get(1).and_then(|n| n.parse().ok()).unwrap_or(usize::MAX)),
         Some("--measure") => {
             let max = argv.get(1).and_then(|n| n.parse().ok()).unwrap_or(40);
