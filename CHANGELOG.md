@@ -2,6 +2,16 @@
 
 All notable changes to sessionkit, called jev-start before 0.3.0. The format follows [Keep a Changelog](https://keepachangelog.com).
 
+## [Unreleased]
+
+### Fixed
+
+- **`usage --tools` counts images.** It left them out; a screenshot costs up to 4,784 tokens and
+  stays in the context like text. Each image now counts at the visual tokens Claude gives its
+  size: one per 28x28 pixels, after the resize of the model's tier. Over 14 days here: 1,285
+  images, 2.0M tokens, 6% of all tool results; Read's share of the re-read went from 16% to 21%.
+  The JSON has `imageTokens` per tool.
+
 ## [0.16.1] - 2026-09-30
 
 ### Added

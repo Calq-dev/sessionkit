@@ -667,18 +667,110 @@ fn result_chars(content: Option<&Value>) -> f64 {
     }
 }
 
+fn base64_decode(data: &str) -> Vec<u8> {
+    let value = |c: u8| match c {
+        b'A'..=b'Z' => Some(c - b'A'),
+        b'a'..=b'z' => Some(c - b'a' + 26),
+        b'0'..=b'9' => Some(c - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    };
+    let (mut bytes, mut buffer, mut bits) = (Vec::with_capacity(data.len() * 3 / 4), 0u32, 0);
+    for six in data.bytes().filter_map(value) {
+        buffer = buffer << 6 | six as u32;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            bytes.push((buffer >> bits) as u8);
+        }
+    }
+    bytes
+}
+
+/// Width and height from a PNG or JPEG header.
+fn image_size(bytes: &[u8]) -> Option<(u32, u32)> {
+    let be = |at: usize, len: usize| bytes.get(at..at + len).map(|b| b.iter().fold(0u32, |n, &x| n << 8 | x as u32));
+    if bytes.starts_with(b"\x89PNG") {
+        return Some((be(16, 4)?, be(20, 4)?));
+    }
+    if !bytes.starts_with(&[0xFF, 0xD8]) {
+        return None;
+    }
+    let mut at = 2;
+    while *bytes.get(at)? == 0xFF {
+        let marker = *bytes.get(at + 1)?;
+        // SOF0..SOF15 hold the size; C4, C8 and CC are other segments in that range.
+        if (0xC0..=0xCF).contains(&marker) && ![0xC4, 0xC8, 0xCC].contains(&marker) {
+            return Some((be(at + 7, 2)?, be(at + 5, 2)?));
+        }
+        at += 2 + be(at + 2, 2)? as usize;
+    }
+    None
+}
+
+/// Claude 4.7 and later read images at the high-resolution tier; other models at the standard one.
+fn high_resolution(model: &str) -> bool {
+    let Some(rest) = ["claude-opus-4", "claude-sonnet-4", "claude-haiku-4"].iter().find_map(|family| model.strip_prefix(family)) else {
+        return !model.starts_with("claude-3");
+    };
+    let minor = rest.trim_start_matches('-').split('-').next().unwrap_or("");
+    minor.len() <= 2 && minor.parse::<u32>().is_ok_and(|minor| minor >= 7)
+}
+
+/// The visual tokens of an image: one per 28x28 patch, after Claude resizes it to the limits of
+/// its tier (https://platform.claude.com/docs/en/build-with-claude/vision-coordinates).
+fn image_tokens(width: u32, height: u32, high_resolution: bool) -> f64 {
+    let (max_edge, max_tokens) = if high_resolution { (2576, 4784) } else { (1568, 1568) };
+    let count = |w: u32, h: u32| w.div_ceil(28) * h.div_ceil(28);
+    let fits = |w: u32, h: u32| w.div_ceil(28) * 28 <= max_edge && h.div_ceil(28) * 28 <= max_edge && count(w, h) <= max_tokens;
+    let (long, short) = (width.max(height), width.min(height).max(1));
+    if fits(long, short) {
+        return count(long, short) as f64;
+    }
+    let aspect = long as f64 / short as f64;
+    let short_of = |long: u32| ((long as f64 / aspect).round_ties_even() as u32).max(1);
+    let (mut lo, mut hi) = (1, long); // lo always fits; hi never fits
+    while lo + 1 < hi {
+        let mid = (lo + hi) / 2;
+        if fits(mid, short_of(mid)) { lo = mid } else { hi = mid }
+    }
+    count(lo, short_of(lo)) as f64
+}
+
+/// The visual tokens of the images in a tool result; an image without a readable size counts as
+/// the most its tier allows.
+fn result_image_tokens(content: Option<&Value>, high_resolution: bool) -> f64 {
+    let Some(Value::Array(blocks)) = content else { return 0.0 };
+    blocks.iter().filter(|b| js::str_of(b, "type") == "image").map(|b| {
+        let data = b.get("source").map(|source| js::str_of(source, "data")).unwrap_or("");
+        match image_size(&base64_decode(data)) {
+            Some((width, height)) => image_tokens(width, height, high_resolution),
+            None => if high_resolution { 4784.0 } else { 1568.0 },
+        }
+    }).sum()
+}
+
 #[derive(Default)]
 struct ToolTotals {
     results: usize,
     chars: f64,
+    image_tokens: f64,
     over: [f64; 2],
     reread: f64,
+}
+
+impl ToolTotals {
+    fn context_tokens(&self) -> f64 {
+        self.chars / CHARS_PER_TOKEN + self.image_tokens
+    }
 }
 
 struct ToolResult {
     tool: String,
     time: f64,
     chars: f64,
+    image_tokens: f64,
     /// The API calls after it in the same transcript, up to the next compaction: each read it again.
     later_calls: f64,
 }
@@ -692,6 +784,7 @@ fn read_tool_results(file: &TranscriptFile) -> Result<(String, Vec<(String, Tool
     let mut open: Vec<(String, ToolResult, f64)> = Vec::new(); // results since the last compaction, with the calls before them
     let mut done = Vec::new();
     let mut cwd = String::new();
+    let mut model = String::new(); // of the last call: the next one reads its results
     let close = |open: &mut Vec<(String, ToolResult, f64)>, done: &mut Vec<(String, ToolResult)>, calls: f64| {
         done.extend(open.drain(..).map(|(id, result, before)| (id, ToolResult { later_calls: calls - before, ..result })));
     };
@@ -715,6 +808,7 @@ fn read_tool_results(file: &TranscriptFile) -> Result<(String, Vec<(String, Tool
             if id.is_empty() || seen_calls.insert(id.to_string()) {
                 calls += 1.0;
             }
+            model = js::str_of(message, "model").to_string();
         }
         let Some(Value::Array(blocks)) = message.get("content") else { continue };
         for block in blocks {
@@ -725,7 +819,8 @@ fn read_tool_results(file: &TranscriptFile) -> Result<(String, Vec<(String, Tool
                 "tool_result" => {
                     let id = js::str_of(block, "tool_use_id").to_string();
                     let tool = names.get(&id).cloned().unwrap_or_else(|| "unknown".into());
-                    let result = ToolResult { tool, time: js::parse_date(js::str_of(&entry, "timestamp")), chars: result_chars(block.get("content")), later_calls: 0.0 };
+                    let result = ToolResult { tool, time: js::parse_date(js::str_of(&entry, "timestamp")), chars: result_chars(block.get("content")),
+                        image_tokens: result_image_tokens(block.get("content"), high_resolution(&model)), later_calls: 0.0 };
                     open.push((id, result, calls));
                 }
                 _ => {}
@@ -762,10 +857,11 @@ fn tool_report(files: &[TranscriptFile], options: &Options) -> Result<ToolReport
                 if result.time < since || (!id.is_empty() && !seen.insert(id)) {
                     continue;
                 }
-                let reread = result.chars / CHARS_PER_TOKEN * result.later_calls;
+                let reread = (result.chars / CHARS_PER_TOKEN + result.image_tokens) * result.later_calls;
                 for totals in [by_tool.entry(result.tool).or_default(), &mut total] {
                     totals.results += 1;
                     totals.chars += result.chars;
+                    totals.image_tokens += result.image_tokens;
                     totals.reread += reread;
                     for (i, floor) in TOOL_BUCKETS.iter().enumerate() {
                         if result.chars > *floor {
@@ -783,25 +879,26 @@ fn tool_report(files: &[TranscriptFile], options: &Options) -> Result<ToolReport
 }
 
 fn tool_json(name: &str, totals: &ToolTotals) -> Value {
-    json!({"tool": name, "results": totals.results, "chars": num(totals.chars),
+    json!({"tool": name, "results": totals.results, "chars": num(totals.chars), "imageTokens": num(totals.image_tokens),
         "charsOver10k": num(totals.over[0]), "charsOver20k": num(totals.over[1]), "rereadTokens": num(totals.reread)})
 }
 
 fn render_tools(report: &ToolReport, options: &Options) -> String {
     let total = &report.total;
     let mut out = vec![format!("sessionkit usage --tools — {}: {} tool results, {} tokens in the context, read again {} times over",
-        report.window, js::grouped(report.results as f64), tokens(total.chars / CHARS_PER_TOKEN),
-        js::number(js::round(total.reread / (total.chars / CHARS_PER_TOKEN).max(1.0))))];
+        report.window, js::grouped(report.results as f64), tokens(total.context_tokens()),
+        js::number(js::round(total.reread / total.context_tokens().max(1.0))))];
     let header = format!("{}{}{}{}{}{}{}{}", pad("tool", 24), lpad("results", 9), lpad("tokens", 9), lpad("share", 7), lpad("avg", 7),
         lpad(">10k", 6), lpad(">20k", 6), lpad("re-read", 10));
     let rows = report.tools.iter().take(options.top).map(|(name, t)| format!("{}{}{}{}{}{}{}{}", pad(name, 24),
-        lpad(&js::grouped(t.results as f64), 9), lpad(&tokens(t.chars / CHARS_PER_TOKEN), 9), lpad(&share(t.chars, total.chars), 7),
-        lpad(&tokens(js::round(t.chars / CHARS_PER_TOKEN / t.results.max(1) as f64)), 7), lpad(&share(t.over[0], t.chars), 6),
+        lpad(&js::grouped(t.results as f64), 9), lpad(&tokens(t.context_tokens()), 9), lpad(&share(t.context_tokens(), total.context_tokens()), 7),
+        lpad(&tokens(js::round(t.context_tokens() / t.results.max(1) as f64)), 7), lpad(&share(t.over[0], t.chars), 6),
         lpad(&share(t.over[1], t.chars), 6), lpad(&share(t.reread, total.reread), 10))).collect();
     out.push(table("Tool results in the context, by what later calls read again", header, rows));
     out.push(String::new());
-    out.push("tokens: the text of the results, at 4 characters a token; images are left out. share: of all tool results.".into());
-    out.push(">10k, >20k: the part of a tool's results that came in results above 10,000 or 20,000 characters.".into());
+    out.push(format!("tokens: the text of the results at 4 characters a token, and their images at the visual tokens Claude counts for them ({} of all). share: of all tool results.",
+        share(total.image_tokens, total.context_tokens())));
+    out.push(">10k, >20k: the part of a tool's text that came in results above 10,000 or 20,000 characters.".into());
     out.push("re-read: each result times the API calls after it, up to the next compaction; each of them read it again.".into());
     out.push("Only tool names and numbers: MCP tools appear by their server's name. Nothing leaves this machine.".into());
     out.join("\n")
@@ -881,5 +978,31 @@ mod tests {
         let seen: Vec<(&str, &str, f64, f64)> = results.iter().map(|(id, r)| (id.as_str(), r.tool.as_str(), r.chars, r.later_calls)).collect();
         // m2 is one call written as two lines; m4 comes after the compaction and reads neither.
         assert_eq!(seen, [("t1", "Bash", 8.0, 2.0), ("t2", "mcp: playwright", 4.0, 1.0)]);
+    }
+
+    #[test]
+    fn an_image_costs_the_visual_tokens_of_its_tier() {
+        // The table under "Resolution and token cost" in the vision docs.
+        assert_eq!(image_tokens(200, 200, false), 64.0);
+        assert_eq!(image_tokens(1000, 1000, true), 1296.0);
+        assert_eq!(image_tokens(1920, 1080, false), 1560.0);
+        assert_eq!(image_tokens(1920, 1080, true), 2691.0);
+        assert_eq!(image_tokens(2000, 1500, false), 1564.0);
+        assert_eq!(image_tokens(1080, 1920, false), 1560.0);
+        assert_eq!(image_tokens(3840, 2160, true), 4784.0);
+        assert!(high_resolution("claude-opus-5-5") && high_resolution("claude-opus-4-7") && high_resolution("claude-sonnet-5"));
+        assert!(!high_resolution("claude-haiku-4-5-20251001") && !high_resolution("claude-opus-4-20250514") && !high_resolution("claude-3-5-sonnet"));
+    }
+
+    #[test]
+    fn the_size_of_an_image_comes_from_its_header() {
+        let png = [b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".as_slice(), &1920u32.to_be_bytes(), &1080u32.to_be_bytes()].concat();
+        assert_eq!(image_size(&png), Some((1920, 1080)));
+        // An APP0 segment of 16 bytes, then SOF0 with height 600 and width 800.
+        let jpeg = [[0xFF, 0xD8, 0xFF, 0xE0, 0, 16].as_slice(), &[0; 14], &[0xFF, 0xC0, 0, 17, 8, 0x02, 0x58, 0x03, 0x20]].concat();
+        assert_eq!(image_size(&jpeg), Some((800, 600)));
+        assert_eq!(base64_decode("iVBORw0K"), b"\x89PNG\r\n");
+        let content = json!([{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}}]);
+        assert_eq!(result_image_tokens(Some(&content), false), 1568.0);
     }
 }

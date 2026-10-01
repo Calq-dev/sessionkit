@@ -80,8 +80,9 @@ session starts again at zero; compared with the transcripts it came out both too
 high.
 
 **`--tools`** shows which tools fill the context. Per tool: how many results, their size in
-tokens (the text, at 4 characters a token; images are left out), the part that came in results
-above 10k and 20k characters, and **re-read**: each result times the API calls after it, up to
+tokens (the text at 4 characters a token; each image at the visual tokens Claude counts for its
+size, one per 28x28 pixels after the resize of its model's tier), the part of the text that came
+in results above 10k and 20k characters, and **re-read**: each result times the API calls after it, up to
 the next compaction. Every such call reads the result again from the cache, so re-read is where
 the cache reads go. MCP tools appear by their server's name. The output holds only tool names and
 numbers, so you can share it as it is.
