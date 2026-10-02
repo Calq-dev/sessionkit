@@ -15,6 +15,7 @@
 // Names from before the rename to sessionkit still work: the JEV_START_* variables and the
 // key stored in the keychain under "jev-start".
 
+use crate::transcript::Entry;
 use crate::Result;
 use crate::auth::{key, refresh_key, can_refresh, KeySource};
 pub use crate::auth::{typesafe_key, key_at_hand};
@@ -764,15 +765,16 @@ fn parse_session(path: &Path) -> Result<Session> {
     for line in std::io::BufReader::new(file).split(b'\n') {
         let Ok(line) = line else { break };
         let line = String::from_utf8_lossy(&line);
-        let Some(entry) = js::parse(line.strip_suffix('\r').unwrap_or(&line)) else { continue };
-        let kind = js::str_of(&entry, "type");
-        if kind == "system" && js::str_of(&entry, "subtype") == "compact_boundary" && !js::truthy(entry.get("isSidechain")) {
-            boundary = js::str_of(&entry, "timestamp").to_string();
-        } else if !boundary.is_empty() && ["user", "assistant"].contains(&kind) && js::str_of(&entry, "timestamp") < boundary.as_str() {
+        let Some(parsed) = Entry::parse(line.strip_suffix('\r').unwrap_or(&line)) else { continue };
+        let kind = parsed.kind();
+        if kind == "system" && parsed.compaction().is_some() && !parsed.is_sidechain() {
+            boundary = parsed.timestamp().to_string();
+        } else if !boundary.is_empty() && ["user", "assistant"].contains(&kind) && parsed.timestamp() < boundary.as_str() {
             continue;
         }
+        let entry = parsed.value();
         if kind == "ai-title" && js::truthy(entry.get("aiTitle")) {
-            session.title = js::str_of(&entry, "aiTitle").to_string();
+            session.title = js::str_of(entry, "aiTitle").to_string();
         }
         if kind == "summary" && js::truthy(entry.get("summary")) && session.title.is_empty() {
             session.title = js::str_of(&entry, "summary").to_string();
@@ -791,7 +793,7 @@ fn parse_session(path: &Path) -> Result<Session> {
             session.branch = js::str_of(&entry, "gitBranch").to_string();
         }
 
-        if kind == "user" && js::truthy(entry.get("isCompactSummary")) && !js::truthy(entry.get("isSidechain")) {
+        if kind == "user" && js::truthy(entry.get("isCompactSummary")) && !parsed.is_sidechain() {
             session.summary = Some(Summary { text: clean_text(&text_of(content_of(&entry))), timestamp });
         } else if is_human_prompt(&entry) {
             let raw = text_of(content_of(&entry));
@@ -812,7 +814,7 @@ fn parse_session(path: &Path) -> Result<Session> {
                 prompt, answer: String::new(), conclusion: String::new(), timestamp, files: Vec::new(), tool_calls: 0, commands: Vec::new(), automated, plant: None,
             });
             current = Some(session.exchanges.len() - 1);
-        } else if let Some(exchange) = current.filter(|_| kind == "assistant" && !js::truthy(entry.get("isSidechain"))) {
+        } else if let Some(exchange) = current.filter(|_| kind == "assistant" && !parsed.is_sidechain()) {
             let message_id = entry.get("message").map_or("", |message| js::str_of(message, "id"));
             let mut add = |session: &mut Session, text: String, key: &str| {
                 if text.is_empty() || (!message_id.is_empty() && !seen.insert((message_id.to_string(), key.to_string()))) {

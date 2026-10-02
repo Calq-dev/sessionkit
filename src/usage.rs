@@ -13,6 +13,7 @@
 use crate::Result;
 use crate::js::{self, num, opt};
 use crate::pricing::{Rate, Ttl};
+use crate::transcript::Entry;
 use indexmap::{IndexMap, IndexSet};
 use serde_json::{Value, json};
 use std::collections::HashSet;
@@ -202,43 +203,32 @@ fn read_calls<'a>(file: &'a TranscriptFile) -> Result<(Transcript<'a>, Vec<Strin
         let Ok(line) = line else { break };
         let line = String::from_utf8_lossy(&line);
         let line = line.strip_suffix('\r').unwrap_or(&line);
-        if !line.contains("\"usage\"") && !line.contains("\"ai-title\"") {
+        if !Entry::may_be_call(line) && !line.contains("\"ai-title\"") {
             continue;
         }
-        let Some(entry) = js::parse(line) else { continue };
-        let kind = js::str_of(&entry, "type");
-        if kind == "ai-title" && js::truthy(entry.get("aiTitle")) {
-            title = js::str_of(&entry, "aiTitle").to_string();
+        let Some(entry) = Entry::parse(line) else { continue };
+        let kind = entry.kind();
+        if kind == "ai-title" && js::truthy(entry.value().get("aiTitle")) {
+            title = js::str_of(entry.value(), "aiTitle").to_string();
         }
         if kind != "assistant" {
             continue;
         }
-        if js::truthy(entry.get("cwd")) && cwd.is_empty() {
-            cwd = js::str_of(&entry, "cwd").to_string();
+        if js::truthy(entry.value().get("cwd")) && cwd.is_empty() {
+            cwd = js::str_of(entry.value(), "cwd").to_string();
         }
-        let empty = json!({});
-        let message = entry.get("message").filter(|m| !m.is_null()).unwrap_or(&empty);
-        let usage = message.get("usage").filter(|u| js::truthy(Some(u)));
-        let id = message.get("id").filter(|v| !v.is_null()).or_else(|| entry.get("requestId")).filter(|v| js::truthy(Some(v)));
-        let model = message.get("model").and_then(Value::as_str);
-        // Claude Code writes "<synthetic>" messages itself; they are not API calls.
-        let (Some(usage), Some(id)) = (usage, id) else { continue };
-        if model == Some("<synthetic>") {
-            continue;
-        }
-        let write = js::num_of(usage, "cache_creation_input_tokens");
-        let split = usage.get("cache_creation").cloned().unwrap_or(json!({}));
-        let write1h = js::num_of(&split, "ephemeral_1h_input_tokens");
-        ids.push(id.as_str().map_or_else(|| id.to_string(), str::to_string));
+        let Some(call) = entry.api_call() else { continue };
+        let Some(id) = call.id else { continue };
+        ids.push(id);
         calls.push(Call {
-            time: js::parse_date(js::str_of(&entry, "timestamp")),
-            model: model.map(str::to_string),
-            fast: usage.get("speed").and_then(Value::as_str) == Some("fast"),
-            input: js::num_of(usage, "input_tokens"),
-            read: js::num_of(usage, "cache_read_input_tokens"),
-            write5m: split.get("ephemeral_5m_input_tokens").and_then(Value::as_f64).unwrap_or(write - write1h),
-            write1h,
-            output: js::num_of(usage, "output_tokens"),
+            time: entry.time(),
+            model: call.model,
+            fast: call.fast,
+            input: call.input,
+            read: call.read,
+            write5m: call.write5m,
+            write1h: call.write1h,
+            output: call.output,
         });
     }
     Ok((Transcript { file, calls, title, cwd }, ids))
@@ -750,24 +740,23 @@ fn read_tool_results(file: &TranscriptFile) -> Result<(String, Vec<(String, Tool
     for line in std::io::BufReader::new(handle).split(b'\n') {
         let Ok(line) = line else { break };
         let line = String::from_utf8_lossy(&line);
-        if !line.contains("\"tool_") && !line.contains("\"usage\"") && !line.contains("\"compact_boundary\"") {
+        if !line.contains("\"tool_") && !Entry::may_be_call(&line) && !Entry::may_be_compaction(&line) {
             continue;
         }
-        let Some(entry) = js::parse(&line) else { continue };
-        if js::str_of(&entry, "subtype") == "compact_boundary" {
+        let Some(entry) = Entry::parse(&line) else { continue };
+        if entry.compaction().is_some() {
             close(&mut open, &mut done, calls);
             continue;
         }
-        if cwd.is_empty() && js::truthy(entry.get("cwd")) {
-            cwd = js::str_of(&entry, "cwd").to_string();
+        if cwd.is_empty() && js::truthy(entry.value().get("cwd")) {
+            cwd = js::str_of(entry.value(), "cwd").to_string();
         }
-        let Some(message) = entry.get("message") else { continue };
-        if js::str_of(&entry, "type") == "assistant" && js::truthy(message.get("usage")) && js::str_of(message, "model") != "<synthetic>" {
-            let id = js::str_of(message, "id");
-            if id.is_empty() || seen_calls.insert(id.to_string()) {
+        let Some(message) = entry.value().get("message") else { continue };
+        if let Some(call) = entry.api_call() {
+            if call.id.as_ref().is_none_or(|id| seen_calls.insert(id.clone())) {
                 calls += 1.0;
             }
-            model = js::str_of(message, "model").to_string();
+            model = call.model.unwrap_or_default();
         }
         let Some(Value::Array(blocks)) = message.get("content") else { continue };
         for block in blocks {
@@ -778,7 +767,7 @@ fn read_tool_results(file: &TranscriptFile) -> Result<(String, Vec<(String, Tool
                 "tool_result" => {
                     let id = js::str_of(block, "tool_use_id").to_string();
                     let tool = names.get(&id).cloned().unwrap_or_else(|| "unknown".into());
-                    let result = ToolResult { tool, time: js::parse_date(js::str_of(&entry, "timestamp")), chars: result_chars(block.get("content")),
+                    let result = ToolResult { tool, time: entry.time(), chars: result_chars(block.get("content")),
                         image_tokens: result_image_tokens(block.get("content"), high_resolution(&model)), later_calls: 0.0 };
                     open.push((id, result, calls));
                 }
