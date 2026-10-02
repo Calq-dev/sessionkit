@@ -14,12 +14,13 @@
 // Claude's context: the prompt hook's line on what calls cost (cost_note), about 50 tokens.
 
 use crate::Result;
-use crate::cache::{CacheState, FIVE_MINUTES, cache_state, read_tail};
+use crate::cache::{CacheState, cache_state, read_tail};
 use crate::js::{self, fixed, num};
 use crate::peers;
 use crate::next::{env_pid, handoff_key, leave_handoff, ps_field, terminate, transcript_of};
 use crate::start::{ROUTE_CONTINUE, Scored, ask_choice, key_at_hand, read_session, route_to_session};
-use crate::usage::{home, price_of, read_price};
+use crate::pricing::{Rate, Ttl};
+use crate::usage::home;
 use serde_json::{Map, Value, json};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -92,15 +93,15 @@ fn state_for(input: &Value) -> Option<CacheState> {
     let usage = input.get("context_window").and_then(|w| w.get("current_usage")).filter(|u| js::truthy(Some(u)));
     let model = input.get("model").and_then(|m| m.get("id")).and_then(Value::as_str).map(str::to_string)
         .or_else(|| from_transcript.as_ref().and_then(|state| state.model.clone()));
-    let price = price_of(model.as_deref());
+    let rate = Rate::of(model.as_deref(), js::truthy(input.get("fast_mode")));
     let context = match usage {
         Some(usage) => js::num_of(usage, "input_tokens") + js::num_of(usage, "cache_read_input_tokens")
             + js::num_of(usage, "cache_creation_input_tokens"),
         None => from_transcript.as_ref().map_or(0.0, |state| state.context),
     };
-    let (true, Some(price)) = (js::truthy_number(context), price) else { return from_transcript };
-    let factor = if js::truthy(input.get("fast_mode")) { 2.0 } else { 1.0 };
-    let write_factor = if from_transcript.as_ref().is_some_and(|state| state.ttl == FIVE_MINUTES) { 1.25 } else { 2.0 };
+    let (true, Some(rate)) = (js::truthy_number(context), rate) else { return from_transcript };
+    // Without a transcript the lifetime is unknown; price the cold call at the 1-hour write.
+    let ttl = from_transcript.as_ref().and_then(|state| state.ttl);
     let cache = input.get("prompt_cache").filter(|c| js::truthy(Some(c)));
     let warm = match cache {
         Some(cache) => js::truthy(cache.get("warm")),
@@ -116,11 +117,11 @@ fn state_for(input: &Value) -> Option<CacheState> {
         model,
         warm,
         left,
-        ttl: from_transcript.as_ref().map_or(f64::NAN, |state| state.ttl),
+        ttl,
         last_call_time: from_transcript.as_ref().map_or(f64::NAN, |state| state.last_call_time),
         last_call_cold: from_transcript.as_ref().is_some_and(|state| state.last_call_cold),
-        per_call: Some((context * read_price(&price) * factor) / 1e6),
-        cold_call: Some((context * price.input * write_factor * factor) / 1e6),
+        per_call: Some(rate.read(context)),
+        cold_call: Some(rate.write(context, ttl.unwrap_or(Ttl::OneHour))),
     })
 }
 

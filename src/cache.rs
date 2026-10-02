@@ -6,14 +6,12 @@
 // the transcript, so it stays fast on a transcript of tens of megabytes.
 
 use crate::js;
-use crate::usage::{price_of, read_price};
+use crate::pricing::{Rate, Ttl};
 use serde_json::Value;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
 const TAIL_BYTES: u64 = 2 * 1024 * 1024;
-pub const FIVE_MINUTES: f64 = 5.0 * 60.0 * 1000.0;
-pub const ONE_HOUR: f64 = 60.0 * 60.0 * 1000.0;
 
 /// The last `limit` bytes of a file as text; a character the cut splits becomes U+FFFD.
 pub fn read_tail(path: &Path, limit: u64) -> std::io::Result<String> {
@@ -33,7 +31,7 @@ struct LastCall {
     context: f64,
     read: f64,
     write: f64,
-    ttl: f64,
+    ttl: Ttl,
     /// A compaction came after the call: nothing is cached, and the context is what it left.
     compacted: bool,
 }
@@ -85,7 +83,7 @@ fn last_call(transcript: &Path) -> std::io::Result<Option<LastCall>> {
                 context,
                 read: if compaction.is_some() { 0.0 } else { read },
                 write: if compaction.is_some() { context } else { write },
-                ttl: 0.0,
+                ttl: Ttl::FiveMinutes,
                 compacted: compaction.is_some(),
             });
         }
@@ -93,7 +91,7 @@ fn last_call(transcript: &Path) -> std::io::Result<Option<LastCall>> {
             break;
         }
     }
-    Ok(last.map(|call| LastCall { ttl: if one_hour { ONE_HOUR } else { FIVE_MINUTES }, ..call }))
+    Ok(last.map(|call| LastCall { ttl: if one_hour { Ttl::OneHour } else { Ttl::FiveMinutes }, ..call }))
 }
 
 #[derive(Clone)]
@@ -102,7 +100,8 @@ pub struct CacheState {
     pub model: Option<String>,
     pub last_call_time: f64,
     pub last_call_cold: bool,
-    pub ttl: f64,
+    /// None when no transcript says it.
+    pub ttl: Option<Ttl>,
     pub warm: bool,
     pub left: f64,
     pub per_call: Option<f64>,
@@ -114,20 +113,18 @@ pub struct CacheState {
 /// again.
 pub fn cache_state(transcript: &Path) -> Option<CacheState> {
     let call = last_call(transcript).ok()??;
-    let price = price_of(call.model.as_deref());
-    let factor = if call.fast { 2.0 } else { 1.0 };
-    let write_factor = if call.ttl == ONE_HOUR { 2.0 } else { 1.25 };
-    let left = if call.compacted { 0.0 } else { call.time + call.ttl - js::now() };
+    let rate = Rate::of(call.model.as_deref(), call.fast);
+    let left = if call.compacted { 0.0 } else { call.time + call.ttl.ms() - js::now() };
     Some(CacheState {
         context: call.context,
         model: call.model,
         last_call_time: call.time,
         last_call_cold: call.write > call.read,
-        ttl: call.ttl,
+        ttl: Some(call.ttl),
         warm: left > 0.0,
         left: if left.is_nan() { f64::NAN } else { left.max(0.0) },
-        per_call: price.map(|p| (call.context * read_price(&p) * factor) / 1e6),
-        cold_call: price.map(|p| (call.context * p.input * write_factor * factor) / 1e6),
+        per_call: rate.map(|r| r.read(call.context)),
+        cold_call: rate.map(|r| r.write(call.context, call.ttl)),
     })
 }
 

@@ -240,7 +240,7 @@ mod tests {
     }
 
     fn peer(status: &str, warm: bool) -> Peer {
-        let cache = CacheState { context: 300_000.0, model: None, last_call_time: 0.0, last_call_cold: false, ttl: 0.0,
+        let cache = CacheState { context: 300_000.0, model: None, last_call_time: 0.0, last_call_cold: false, ttl: None,
             warm, left: if warm { 600_000.0 } else { 0.0 }, per_call: Some(0.06), cold_call: None };
         Peer { name: format!("{status}-{warm}"), session_id: String::new(), cwd: "/p".into(), status: status.into(), transcript: None, cache: Some(cache) }
     }
