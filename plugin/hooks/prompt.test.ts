@@ -126,6 +126,33 @@ test("always: Claude Code compacts by itself from now on, and this time too", as
   expect(seen.commands).toEqual(["autocompact 375000", "compact"]);
 });
 
+const SUBAGENT = { cold: false, subagent: true, at: "375K", window: 375000, question: "A subagent of this session has 410K tokens of context. Set the window?" };
+
+test("a large subagent: the window is set without a /compact, and the message goes out after it", async ($, on) => {
+  const clock = mock.clock(on);
+  const seen = world(on, SUBAGENT, "Always at 375K");
+  const result = await $.prompt.submit(typed("go on"));
+  expect(seen.asked).toEqual([["Always at 375K", "Continue"]]);
+  expect(result.drop).toContain("auto-compact window");
+  await clock.settle();
+  expect(seen.commands).toEqual(["autocompact 375000"]);
+  expect(seen.entered).toEqual(["go on"]);
+});
+
+test("a large subagent: declining sends the message and sets nothing", async ($, on) => {
+  const seen = world(on, SUBAGENT, "Continue");
+  const result = await $.prompt.submit(typed("go on"));
+  expect(result.text).toBe("go on");
+  expect(seen.commands).toBeUndefined();
+});
+
+test("a large subagent: a dismissed dialog sends the message and sets nothing", async ($, on) => {
+  const seen = world(on, SUBAGENT, undefined);
+  const result = await $.prompt.submit(typed("go on"));
+  expect(result.text).toBe("go on");
+  expect(seen.commands).toBeUndefined();
+});
+
 test("a large session can go on as it is", async ($, on) => {
   const seen = world(on, LARGE, "Continue");
   const result = await $.prompt.submit(typed("go on"));

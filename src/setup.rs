@@ -38,13 +38,15 @@ const SKILL: &str = include_str!("SKILL.md");
 const SKILL_NAME: &str = "sessionkit";
 const OLD_SKILL_NAME: &str = "sessionkit-grep";
 
-const PLUGIN_FILES: [(&str, &str); 12] = [
+const PLUGIN_FILES: [(&str, &str); 14] = [
     (".claude-plugin/plugin.json", include_str!("../plugin/.claude-plugin/plugin.json")),
     (".claude-plugin/marketplace.json", include_str!("../plugin/.claude-plugin/marketplace.json")),
     ("hooks/hooks.json", include_str!("../plugin/hooks/hooks.json")),
     ("hooks/agent.js", include_str!("../plugin/hooks/agent.js")),
     ("hooks/compact.js", include_str!("../plugin/hooks/compact.js")),
     ("hooks/edit.js", include_str!("../plugin/hooks/edit.js")),
+    ("hooks/effort.js", include_str!("../plugin/hooks/effort.js")),
+    ("hooks/fold.js", include_str!("../plugin/hooks/fold.js")),
     ("hooks/index.js", include_str!("../plugin/hooks/index.js")),
     ("hooks/prompt.js", include_str!("../plugin/hooks/prompt.js")),
     ("hooks/read.js", include_str!("../plugin/hooks/read.js")),
@@ -53,7 +55,7 @@ const PLUGIN_FILES: [(&str, &str); 12] = [
     ("output-styles/robot.md", include_str!("../plugin/output-styles/robot.md")),
 ];
 /// What the plugin does, one line per hook or file, for the output of setup.
-const PLUGIN_FEATURES: [&str; 8] = [
+const PLUGIN_FEATURES: [&str; 10] = [
     "/compact and auto-compaction go through sessionkit compact, without a summary",
     "before a message to a cold session, a dialog asks: continue here, or in a fresh session",
     "before a message to a warm session above 375K, a dialog offers to compact first, or always at 375K",
@@ -61,6 +63,8 @@ const PLUGIN_FEATURES: [&str; 8] = [
     "a teammate's idle notification that repeats its report gets a one-line result",
     "after the first large read, a tip that sessionkit ask answers without reading; outline first as an option in /config",
     "per subagent, in shadow: the model and effort Jev would give it, and which warm session would fit",
+    "per typed prompt, in shadow: the effort level Jev finds enough, beside the one the turn ran at; applying it as an option in /config",
+    "as an option in /config: when a turn ends that added much tool output, its outputs are cut and the prompt cache stays",
     "the output style sessionkit-robot, to pick with /output-style sessionkit-robot",
 ];
 

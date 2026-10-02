@@ -174,6 +174,12 @@ apart.
   Code's own `/autocompact 375000` as well, so it compacts by itself from then on, also in auto
   mode, where no new message comes in to ask at. It asks once per size, and again only when the
   context has grown by half; not at all once you set `autoCompactWindow` yourself.
+- **When a subagent has grown large** (the same line, `SESSIONKIT_COMPACT_ABOVE`) while the main
+  session is still small and no `autoCompactWindow` is set, the dialog asks whether to set one.
+  Without a window a subagent never compacts, and Claude Code has no window per subagent: the
+  main session shares it, and both compact at about the window minus 33K. **Always at 375K**
+  runs `/autocompact 375000` and then sends your message; **Continue** sends it as it is. The
+  window reaches subagents started after it. It asks once per session.
 
 - **An output style to pick, if you like it**: `/output-style sessionkit-robot`. Terse and
   neutral, with no personality, and after a tool call that taught it something the agent writes
@@ -228,6 +234,25 @@ apart.
   twentieth of a cent. The log is for a measurement before any routing is switched on. A
   function hook on `agent.spawn`; without a TypeSafe key in the environment or the keychain it
   logs nothing, since a hook must not raise a 1Password prompt.
+- **When you send a prompt**, in shadow: you pick an effort level once, and a prompt like "yes"
+  or "commit this" then runs at that level. At the first model request of a turn you typed, Jev
+  says which effort level is enough for the prompt, seeing also the last thing the agent said,
+  and `hook effort-route` logs that beside the level the turn ran at, in
+  `~/.cache/sessionkit/effort-routes.jsonl`. Nothing changes the request, and it does not wait.
+  The levels are described in Anthropic's own words from its effort table. One Jev question per
+  typed prompt; subagents, and models without an effort level, are left alone. Function hooks on
+  `prompt.submit`, `turn.start` and `turn.step`; without a TypeSafe key at hand it logs nothing.
+
+  **Applying it** is an option, off by default: turn on *Lower the effort per prompt* in
+  `/config`. Then the turn runs at Jev's level when that is lower than its own, never higher;
+  the first request waits for the answer for two seconds at most, and the level holds for the
+  whole turn. The prompt cache holds: Anthropic documents that a change of a request's effort
+  invalidates the cached messages unless it is carried inside the conversation, and Claude Code
+  sends a hook's change that way on Opus 5.5, Sonnet 5.5 and Fable 5.1 with an API key or a
+  subscription. Measured with Claude Code 2.1.287 on Opus 5.5: the lowered turn read 121.4K
+  tokens from the cache and wrote 0.2K, and so did the turn after it. On other models and
+  providers one lowered turn costs two rewrites of the whole context. It is off until Jev's
+  answers on real prompts are measured.
 
 ### Continue in a fresh session from inside Claude Code
 
@@ -549,9 +574,22 @@ Claude Code measured them), and to propose how to go on. That costs one model ca
 write it makes, your next message would make anyway. After an auto-compaction the agent just
 goes on with its work.
 
+**Fold a turn when it ends** is an option, off by default: turn on *Fold a turn when it ends*
+in `/config`. A tool output is read once and then rides along in every later call. When a turn
+ends that added 20,000 characters of tool output or more, the plugin starts a compaction of its
+own and answers it with `sessionkit compact --fold`: every earlier message stays as Claude Code
+has it, and in the finished turn the output of each call that changed no file is cut to its
+first 300 characters. Prompts, answers, thinking and every call with its input stay. No model is
+asked, Jev neither. The cut is at the end of the conversation, so everything before it stays in
+the prompt cache. Measured with Claude Code 2.1.287 and Haiku: a turn that read a file of 22K
+tokens ended at 74.5K tokens of context; the first call of the next turn read 51.6K from the
+cache and wrote 0.8K. Interactive sessions only: a headless session (`claude -p`, the SDK)
+cannot start a compaction between turns.
+
 ```sh
 sessionkit compact last               # what a compaction now would keep; changes nothing
 sessionkit compact 9d17b657 --verbose # per tool call: the decision and both probabilities
+sessionkit compact --fold                         # for the plugin: fold the last turn of the messages on stdin
 sessionkit compact --measure build cuts.json      # labelled cuts from every session (free)
 sessionkit compact --measure run cuts.json train  # measure the questions on them (costs money)
 ```
@@ -647,6 +685,10 @@ and shared terms scored at chance.
 - The cold-cache count in `usage` is a heuristic; a changed prompt prefix also rewrites the
   cache without a pause.
 - The transcript format of Claude Code is not a public contract and can change.
+- A fold (the option *Fold a turn when it ends*) is a compaction to Claude Code: the screen shows
+  "Conversation compacted", the PreCompact and SessionStart hooks of your settings run, and the
+  transcript file gets one more copy of the conversation at every fold. A session resumed after a
+  fold writes the conversation to the cache again.
 
 ## Environment
 

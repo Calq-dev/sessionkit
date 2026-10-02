@@ -200,6 +200,7 @@ fn read_calls<'a>(file: &'a TranscriptFile) -> Result<(Transcript<'a>, Vec<Strin
     let handle = std::fs::File::open(&file.path).map_err(|error| format!("{error}, open '{}'", file.path.display()))?;
     let mut calls = Vec::new();
     let mut ids = Vec::new();
+    let mut index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     let (mut title, mut cwd) = (String::new(), String::new());
     for line in std::io::BufReader::new(handle).split(b'\n') {
         let Ok(line) = line else { break };
@@ -221,6 +222,14 @@ fn read_calls<'a>(file: &'a TranscriptFile) -> Result<(Transcript<'a>, Vec<Strin
         }
         let Some(call) = entry.api_call() else { continue };
         let Some(id) = call.id.clone() else { continue };
+        // A response is written as a line per block, and an early line can carry the output
+        // count of the stream's start: the call counts the highest.
+        if let Some(&at) = index.get(&id) {
+            let first: &mut Call = &mut calls[at];
+            first.call.output = first.call.output.max(call.output);
+            continue;
+        }
+        index.insert(id.clone(), calls.len());
         ids.push(id);
         calls.push(Call { time: entry.time(), call });
     }
@@ -915,6 +924,21 @@ mod tests {
         let seen: Vec<(&str, &str, f64, f64)> = results.iter().map(|(id, r)| (id.as_str(), r.tool.as_str(), r.chars, r.later_calls)).collect();
         // m2 is one call written as two lines; m4 comes after the compaction and reads neither.
         assert_eq!(seen, [("t1", "Bash", 8.0, 2.0), ("t2", "mcp: playwright", 4.0, 1.0)]);
+    }
+
+    #[test]
+    fn a_call_written_as_several_lines_counts_its_last_output() {
+        // Claude Code writes a line per block; the first can carry the output count of the stream's start.
+        let line = |id: &str, output: f64| json!({"type": "assistant", "timestamp": "2026-09-30T09:00:00Z",
+            "message": {"id": id, "model": "claude-opus-5-5", "usage": {"input_tokens": 1, "output_tokens": output}, "content": []}});
+        let lines = [line("m1", 8.0), line("m1", 8.0), line("m1", 900.0), line("m2", 40.0)];
+        let path = std::env::temp_dir().join(format!("sessionkit-output-{}.jsonl", std::process::id()));
+        std::fs::write(&path, lines.iter().map(|line| line.to_string() + "\n").collect::<String>()).unwrap();
+        let file = TranscriptFile { path: path.clone(), folder: String::new(), session: String::new(), subagent: true };
+        let (transcript, ids) = read_calls(&file).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(ids, ["m1", "m2"]);
+        assert_eq!(transcript.calls.iter().map(|call| call.output).collect::<Vec<f64>>(), [900.0, 40.0]);
     }
 
     #[test]

@@ -1,7 +1,9 @@
 // sessionkit's choice before a message to a cold session: when the prompt cache has expired and
 // writing the context again is expensive, ask in Claude Code's own dialog whether to go on here
 // or in a fresh session with only what matters. In a warm session whose context has grown large
-// (375K tokens by default), ask whether to compact first, since every message re-reads it all. The dialog is the engine's, so asking costs no
+// (375K tokens by default), ask whether to compact first, since every message re-reads it all. When
+// a subagent of the session has grown that large and no auto-compact window is set, ask whether to
+// set one, since without it a subagent never compacts. The dialog is the engine's, so asking costs no
 // model call. `sessionkit hook cold-check` decides whether to ask and words the question;
 // `sessionkit hook cold-choice` acts on the answer. When anything fails, the message goes through,
 // and the settings hook `sessionkit hook prompt` still stops it once.
@@ -53,6 +55,34 @@ async function large($, event, next, check) {
   return { drop: "sessionkit: compacting first; your message goes out once that is done." };
 }
 
+/**
+ * A subagent of this session has grown large while Claude Code has no auto-compact window, so the
+ * subagent never compacts. The main session is small and has nothing to /compact: the choice is
+ * the window alone (its /autocompact), which the main session shares. The command runs just after
+ * this hook, as above, and the message goes out after it.
+ */
+async function subagent($, event, next, check) {
+  const ALWAYS = `Always at ${check.at}`;
+  let choice;
+  try {
+    choice = await $.ui.ask(check.question, { options: [ALWAYS, CONTINUE], header: "Large subagent" });
+  } catch {
+    choice = CONTINUE; // dismissed
+  }
+  if (choice !== ALWAYS) return next(event);
+  $.clock.after(0, async () => {
+    try {
+      await $.command.run({ command: "autocompact", args: String(check.window) });
+      await $.prompt.submit({ text: event.text });
+    } catch (error) {
+      $.ui.log(`sessionkit: /autocompact did not run (${error instanceof Error ? error.message : String(error)})`);
+      await $.prompt.fill({ text: event.text });
+      $.ui.toast("sessionkit: could not set the auto-compact window; your message is back in the prompt box.");
+    }
+  });
+  return { drop: "sessionkit: setting the auto-compact window; your message goes out once that is done." };
+}
+
 /** @type {import('claude-code').Register} */
 export const register = (on) => {
   on("prompt.submit", async ($, event, next) => {
@@ -66,6 +96,7 @@ export const register = (on) => {
       return next(event);
     }
     if (check.large) return large($, event, next, check);
+    if (check.subagent) return subagent($, event, next, check);
     if (!check.cold) return next(event);
 
     const here = `Continue here (${check.cost})`;

@@ -14,6 +14,10 @@
 //
 // `sessionkit compact <session>` runs the same selection over a transcript and prints what it
 // would keep, without changing anything.
+//
+// `sessionkit compact --fold` is for the end of a turn (the plugin's option foldTurns): without
+// Jev, it cuts only the tool outputs of the last turn, so that everything before it stays in the
+// prompt cache. See `fold`.
 
 use crate::transcript::Entry as TranscriptEntry;
 use crate::Result;
@@ -30,6 +34,7 @@ use std::sync::LazyLock;
 
 const USAGE: &str = "Usage: sessionkit compact <session> [--verbose]
        sessionkit compact --hook
+       sessionkit compact --fold
 
 Compacts a Claude Code conversation without a summary: Jev (TypeSafe) decides per tool call
 whether the call and its output are still needed; the rest is cut or dropped, and all text stays
@@ -42,6 +47,8 @@ would keep, and changes nothing. That sends the conversation to TypeSafe and cos
 Options:
   --verbose   list the decision and both probabilities for every tool call
   --hook      read Claude Code's messages as JSON on stdin and print the plan (for the plugin)
+  --fold      the same, for the last turn only and without Jev: every earlier message stays, and
+              in the last turn the output of each call that changed no file is cut (for the plugin)
   --measure build <file>   collect labelled cuts from every session, split train/test (free)
   --measure run <file> <train|test|all> [max] [--out rows.json]
                            measure the questions on those cuts (costs money)
@@ -627,6 +634,47 @@ pub fn compact(messages: &[Message]) -> Result<Compaction> {
     })
 }
 
+// ---------------------------------------------------------------- the fold
+
+/// Tools whose call changes a file: a fold keeps their output.
+const CHANGES_FILES: [&str; 4] = ["Edit", "Write", "MultiEdit", "NotebookEdit"];
+
+struct Fold {
+    plan: Vec<Value>,
+    /// Outputs cut, and the characters that freed.
+    outputs: usize,
+    chars: usize,
+}
+
+/// Fold the last turn, right after it ended: every message before its prompt stays as the engine
+/// has it, so the prompt cache still holds for them, and in the turn itself the output of every
+/// call that only looked is cut to its first lines. Only messages that hold tool results are
+/// rebuilt. A rebuilt message of the assistant loses its thinking block, and Claude Code then
+/// sends the whole conversation without thinking, which writes all of it to the cache again
+/// (measured with Claude Code 2.1.287). So every call stays, with its input.
+///
+/// Without Jev: a call that changed a file keeps its output, any other loses it. The next step
+/// is to ask Jev the result question of `compact` for the calls of this one turn.
+fn fold(messages: &[Message]) -> Fold {
+    let start = messages.iter().rposition(|m| m.role == "user" && m.results.is_empty() && !js::trim(&m.text).is_empty()).unwrap_or(0);
+    let looked: HashSet<&str> = messages[start..].iter().flat_map(|m| &m.uses)
+        .filter(|u| !CHANGES_FILES.contains(&u.tool.as_str())).map(|u| u.id.as_str()).collect();
+    let (mut outputs, mut chars) = (0, 0);
+    let plan = messages.iter().enumerate().map(|(i, message)| {
+        let results: Vec<Value> = message.results.iter().enumerate().map(|(j, result)| {
+            let short = cut(&result.text, result.is_error);
+            if i < start || !looked.contains(result.id.as_str()) || short == result.text {
+                return json!({"keep": j});
+            }
+            outputs += 1;
+            chars += js::len(&result.text) - js::len(&short);
+            json!({"keep": j, "text": short})
+        }).collect();
+        if results.iter().any(|r| r.get("text").is_some()) { json!({"from": i, "toolUses": [], "toolResults": results}) } else { json!({"keep": i}) }
+    }).collect();
+    Fold { plan, outputs, chars }
+}
+
 // ---------------------------------------------------------------- commands
 
 /// The smallest reduction worth replacing the summary for. A build with the test-api feature
@@ -639,12 +687,30 @@ fn min_reduction() -> f64 {
     MIN_REDUCTION
 }
 
-/// For the plugin: messages on stdin, the plan or the reason to fall back on stdout.
-fn hook() -> Result<()> {
+/// The messages the plugin hands over on stdin.
+fn stdin_messages() -> Result<Vec<Message>> {
     let mut input = String::new();
     std::io::stdin().read_to_string(&mut input).map_err(|e| e.to_string())?;
     let data = js::parse(&input).ok_or("stdin is not JSON")?;
-    let messages: Vec<Message> = data["messages"].as_array().ok_or("no messages on stdin")?.iter().map(message_of).collect();
+    Ok(data["messages"].as_array().ok_or("no messages on stdin")?.iter().map(message_of).collect())
+}
+
+/// For the plugin, after a turn: messages on stdin, the plan of the fold or the reason to leave
+/// the conversation as it is on stdout.
+fn fold_hook() -> Result<()> {
+    let folded = fold(&stdin_messages()?);
+    let answer = if folded.outputs == 0 {
+        json!({"fallback": "no long tool output in the last turn"})
+    } else {
+        json!({"plan": folded.plan, "summary": format!("folded the last turn: {} tool output(s) cut, {} characters", folded.outputs, js::grouped(folded.chars as f64))})
+    };
+    println!("{}", js::stringify(&answer));
+    Ok(())
+}
+
+/// For the plugin: messages on stdin, the plan or the reason to fall back on stdout.
+fn hook() -> Result<()> {
+    let messages = stdin_messages()?;
     let answer = match compact(&messages) {
         Err(error) => json!({"fallback": error}),
         Ok(result) if result.reduction() < min_reduction() => {
@@ -753,6 +819,7 @@ pub fn compact_main(argv: &[String]) -> Result<()> {
     for arg in argv {
         match arg.as_str() {
             "--hook" => return hook(),
+            "--fold" => return fold_hook(),
             "--measure" => return measure(&argv[1..]),
             "--verbose" => verbose = true,
             "-h" | "--help" => {
@@ -821,7 +888,7 @@ fn label(path: &str, after: &[Message]) -> Option<Label> {
             if file == path && tool.tool == "Read" {
                 return Some(Label::Reread);
             }
-            if file == path && ["Edit", "Write", "MultiEdit", "NotebookEdit"].contains(&tool.tool.as_str()) {
+            if file == path && CHANGES_FILES.contains(&tool.tool.as_str()) {
                 return Some(Label::Needed);
             }
             let input = js::stringify(&tool.input);
@@ -1079,6 +1146,51 @@ mod tests {
         assert_eq!(plan[3], json!({"keep": 5}));
         assert_eq!(plan.len(), messages.len() - 2);
         assert!(chars < messages.iter().map(message_chars).sum::<usize>());
+    }
+
+    /// Two turns: one that read a file, and one that read a file and edited it.
+    fn two_turns() -> Vec<Message> {
+        let output = "line\n".repeat(200);
+        let mut messages = vec![text("user", "read a.rs")];
+        messages.extend(call("u0", &output));
+        messages.push(text("assistant", "read it"));
+        messages.push(text("user", "now fix it"));
+        messages.extend(call("u1", &output));
+        let mut edit = call("u2", &output);
+        edit[0].uses[0].tool = "Edit".into();
+        messages.extend(edit);
+        messages.push(text("assistant", "fixed"));
+        messages
+    }
+
+    #[test]
+    fn the_fold_keeps_earlier_turns_and_cuts_what_the_last_one_only_looked_at() {
+        let messages = two_turns();
+        let folded = fold(&messages);
+        assert_eq!(folded.plan.len(), messages.len());
+        // Turn one stays as the engine has it, its long output included.
+        for i in 0..5 {
+            assert_eq!(folded.plan[i], json!({"keep": i}));
+        }
+        // Turn two: the output of the Read is cut in the message that holds the result.
+        assert_eq!(folded.plan[6]["from"], 6);
+        assert_eq!(folded.plan[6]["toolUses"], json!([]));
+        assert!(folded.plan[6]["toolResults"][0]["text"].as_str().unwrap().contains("sessionkit compact cut 700 chars"));
+        // No message of the assistant is rebuilt, and the Edit keeps its output.
+        for i in [5, 7, 8, 9] {
+            assert_eq!(folded.plan[i], json!({"keep": i}));
+        }
+        assert_eq!((folded.outputs, folded.chars), (1, 1000 - js::len(&cut(&"line\n".repeat(200), false))));
+    }
+
+    #[test]
+    fn a_turn_without_long_outputs_is_not_folded() {
+        let mut messages = two_turns();
+        messages.push(text("user", "thanks"));
+        messages.push(text("assistant", "welcome"));
+        let folded = fold(&messages);
+        assert_eq!(folded.outputs, 0);
+        assert!(folded.plan.iter().enumerate().all(|(i, step)| *step == json!({"keep": i})));
     }
 
     #[test]
