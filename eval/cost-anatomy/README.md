@@ -58,8 +58,12 @@ modelled.
    can start a compaction at `turn.complete` that its own hook answers, and when only the user
    messages with tool results of the last turn are rebuilt, the next call read 51.6K from the
    cache and wrote 0.8K (context before: 74.5K). A rebuilt assistant message loses the cache
-   (read 18.0K, wrote 43.5K), which is what a regular sessionkit compaction does today. Built as
-   the option *Fold a turn when it ends*, without Jev, off by default.
+   (read 18.0K, wrote 43.5K). A regular sessionkit compaction rebuilds assistant messages too, but
+   keeping them would gain nothing there: in 7 of 8 compactions of real sessions the first changed
+   message is among the first 2 to 5, with 0 to 2% of the kept conversation before it (one case:
+   35%), so the rest is written again whatever is rebuilt (`first_cut.py`). After those
+   compactions the first call read 26–38K, the system prompt and tools, and wrote 52–130K. Built
+   as the option *Fold a turn when it ends*, without Jev, off by default.
 3. **Effort per prompt.** About two thirds of the output of main sessions is thinking (18M of
    26.8M tokens). It is paid as output and then stays in the context across turns: together up to
    11% of all cost. An upper bound, because the visible part is estimated at 4 characters a token.
