@@ -165,12 +165,12 @@ apart.
   sessions running in this folder, with whether they are idle and warm. Facts only, no advice;
   about 50 tokens a message.
 
-- **When a warm session has grown large** (300K tokens by default; `SESSIONKIT_COMPACT_ABOVE`),
+- **When a warm session has grown large** (375K tokens by default; `SESSIONKIT_COMPACT_ABOVE`),
   the dialog asks whether to compact first: every message re-reads the whole context, and it
   shows the cost per call now and after /compact. A simulation over earlier sessions found that
   compacting at 300K saves about half of the cache reads, more than acting on a cold cache alone.
-  **Compact first** runs /compact and then sends your message; **Always at 300K** runs Claude
-  Code's own `/autocompact 300000` as well, so it compacts by itself from then on, also in auto
+  **Compact first** runs /compact and then sends your message; **Always at 375K** runs Claude
+  Code's own `/autocompact 375000` as well, so it compacts by itself from then on, also in auto
   mode, where no new message comes in to ask at. It asks once per size, and again only when the
   context has grown by half; not at all once you set `autoCompactWindow` yourself.
 

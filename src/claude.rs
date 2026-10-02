@@ -440,7 +440,7 @@ fn large_state(input: &Value) -> Option<CacheState> {
 }
 
 fn compact_above() -> f64 {
-    setting("COMPACT_ABOVE", 300_000.0)
+    setting("COMPACT_ABOVE", 375_000.0)
 }
 
 /// Whether the person set Claude Code's own auto-compact window (/autocompact <tokens>): then it

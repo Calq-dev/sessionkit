@@ -56,7 +56,7 @@ const PLUGIN_FILES: [(&str, &str); 12] = [
 const PLUGIN_FEATURES: [&str; 8] = [
     "/compact and auto-compaction go through sessionkit compact, without a summary",
     "before a message to a cold session, a dialog asks: continue here, or in a fresh session",
-    "before a message to a warm session above 300K, a dialog offers to compact first, or always at 300K",
+    "before a message to a warm session above 375K, a dialog offers to compact first, or always at 375K",
     "an Edit refused because the file was not read is read and tried again, without the text in the context",
     "a teammate's idle notification that repeats its report gets a one-line result",
     "after the first large read, a tip that sessionkit ask answers without reading; outline first as an option in /config",
