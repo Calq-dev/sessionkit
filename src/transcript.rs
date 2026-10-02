@@ -11,6 +11,7 @@ pub struct Entry {
 }
 
 /// What one API call recorded in its `usage`.
+#[derive(Clone)]
 pub struct ApiCall {
     /// The message id, or the request id when there is none; a response written as several
     /// lines repeats it.

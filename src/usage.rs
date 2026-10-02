@@ -13,7 +13,7 @@
 use crate::Result;
 use crate::js::{self, num, opt};
 use crate::pricing::{Rate, Ttl};
-use crate::transcript::Entry;
+use crate::transcript::{ApiCall, Entry};
 use indexmap::{IndexMap, IndexSet};
 use serde_json::{Value, json};
 use std::collections::HashSet;
@@ -91,16 +91,18 @@ fn parse_arguments(argv: &[String]) -> Options {
     options
 }
 
+/// An API call with the time of its entry.
 #[derive(Clone)]
 struct Call {
     time: f64,
-    model: Option<String>,
-    fast: bool,
-    input: f64,
-    read: f64,
-    write5m: f64,
-    write1h: f64,
-    output: f64,
+    call: ApiCall,
+}
+
+impl std::ops::Deref for Call {
+    type Target = ApiCall;
+    fn deref(&self) -> &ApiCall {
+        &self.call
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -218,18 +220,9 @@ fn read_calls<'a>(file: &'a TranscriptFile) -> Result<(Transcript<'a>, Vec<Strin
             cwd = js::str_of(entry.value(), "cwd").to_string();
         }
         let Some(call) = entry.api_call() else { continue };
-        let Some(id) = call.id else { continue };
+        let Some(id) = call.id.clone() else { continue };
         ids.push(id);
-        calls.push(Call {
-            time: entry.time(),
-            model: call.model,
-            fast: call.fast,
-            input: call.input,
-            read: call.read,
-            write5m: call.write5m,
-            write1h: call.write1h,
-            output: call.output,
-        });
+        calls.push(Call { time: entry.time(), call });
     }
     Ok((Transcript { file, calls, title, cwd }, ids))
 }
@@ -249,10 +242,10 @@ impl Totals {
         self.calls += 1;
         self.tokens.input += call.input;
         self.tokens.read += call.read;
-        self.tokens.write += call.write5m + call.write1h;
+        self.tokens.write += call.write();
         self.tokens.output += call.output;
         let Some(cost) = cost_of(call) else {
-            self.unpriced += call.input + call.read + call.write5m + call.write1h + call.output;
+            self.unpriced += call.context() + call.output;
             return;
         };
         self.cost.read += cost.read;
@@ -280,10 +273,6 @@ impl Totals {
     }
 }
 
-fn context_of(call: &Call) -> f64 {
-    call.input + call.read + call.write5m + call.write1h
-}
-
 struct Rebuild {
     gap: f64,
     tokens: f64,
@@ -298,7 +287,7 @@ fn rebuilds_of(calls: &[Call]) -> Vec<Rebuild> {
     for pair in calls.windows(2) {
         let call = &pair[1];
         let gap = call.time - pair[0].time;
-        let write = call.write5m + call.write1h;
+        let write = call.write();
         // The call writes at the lifetime the session uses; within it the cache was still warm.
         let ttl = if call.write1h > call.write5m { Ttl::OneHour } else { Ttl::FiveMinutes };
         if gap > ttl.ms() && write >= REBUILD_MIN_TOKENS && write > call.read {
@@ -416,7 +405,7 @@ fn summarize(transcripts: &[Transcript], options: &Options) -> Report {
         let rebuilds = rebuilds_of(calls);
         let last = calls.last();
         let rate = last.and_then(|call| Rate::of(call.model.as_deref(), call.fast));
-        let last_context = last.map_or(0.0, context_of);
+        let last_context = last.map_or(0.0, |call| call.context());
         SessionRow {
             id: session.id.clone(),
             project: session.project.clone(),
@@ -424,7 +413,7 @@ fn summarize(transcripts: &[Transcript], options: &Options) -> Report {
             cost: session.main.cost.sum() + session.subagents.cost.sum(),
             subagent_cost: session.subagents.cost.sum(),
             calls: session.main.calls + session.subagents.calls,
-            average_context: if calls.is_empty() { 0.0 } else { calls.iter().fold(0.0, |s, call| s + context_of(call)) / calls.len() as f64 },
+            average_context: if calls.is_empty() { 0.0 } else { calls.iter().fold(0.0, |s, call| s + call.context()) / calls.len() as f64 },
             last_context,
             last_active: last.map_or(0.0, |call| call.time),
             rebuilds: rebuilds.len(),
@@ -930,8 +919,8 @@ mod tests {
 
     #[test]
     fn a_pause_within_the_one_hour_cache_is_no_rebuild() {
-        let call = |minute: f64, write5m: f64, write1h: f64| Call { time: minute * 60000.0, model: Some("claude-opus-5-5".into()),
-            fast: false, input: 1.0, read: 0.0, write5m, write1h, output: 0.0 };
+        let call = |minute: f64, write5m: f64, write1h: f64| Call { time: minute * 60000.0, call: ApiCall {
+            id: None, model: Some("claude-opus-5-5".into()), fast: false, input: 1.0, read: 0.0, write5m, write1h, output: 0.0 } };
         let gaps = |calls: &[Call]| rebuilds_of(calls).iter().map(|r| r.gap / 60000.0).collect::<Vec<f64>>();
         assert_eq!(gaps(&[call(0.0, 0.0, 50000.0), call(30.0, 0.0, 50000.0), call(100.0, 0.0, 50000.0)]), [70.0]);
         assert_eq!(gaps(&[call(0.0, 50000.0, 0.0), call(30.0, 50000.0, 0.0)]), [30.0]);

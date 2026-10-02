@@ -4,6 +4,8 @@ All notable changes to sessionkit, called jev-start before 0.3.0. The format fol
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-10-02
+
 ### Added
 
 - **Weekly reset in the status line.** On a subscription the 7-day limit now shows how long
@@ -16,7 +18,9 @@ All notable changes to sessionkit, called jev-start before 0.3.0. The format fol
   transcripts this removed 19 of 161 rebuilds, $56 of $780.
 - **Fast mode in "cheaper to restart".** The cost of one more call and of a cold resume now
   doubles for a session in fast mode, as the status line already did.
-
+- **Claude Sonnet 5.5 has a price.** `usage` left its calls out of the costs ("no price"). The
+  prices are built in, from Anthropic's model table as of 2026-09-25; neither the Claude API nor
+  Claude Code publishes per-token prices in a form a program can read.
 - **A number setting that is empty or no number keeps its default.** An empty
   `SESSIONKIT_BLOCK_COLD_ABOVE` or `SESSIONKIT_COMPACT_ABOVE` counted as 0, so every cold or
   warm session got the warning; a typo counted as "never". The same holds for
