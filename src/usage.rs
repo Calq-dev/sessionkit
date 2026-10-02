@@ -12,13 +12,13 @@
 
 use crate::Result;
 use crate::js::{self, num, opt};
+use crate::pricing::{Rate, Ttl};
 use indexmap::{IndexMap, IndexSet};
 use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::io::BufRead;
 use std::path::PathBuf;
 
-const CACHE_TTL_MS: f64 = 5.0 * 60.0 * 1000.0;
 const REBUILD_MIN_TOKENS: f64 = 20000.0; // a cache write this large after a pause rebuilds the context
 const FRESH_CONTEXT_TOKENS: f64 = 15000.0; // about what sessionkit start hands a new session
 const RESTART_MIN_CONTEXT: f64 = 150000.0;
@@ -32,31 +32,6 @@ pub fn home() -> PathBuf {
 pub fn projects_dir() -> PathBuf {
     home().join(".claude").join("projects")
 }
-
-/// USD per million tokens, from the Claude API model table (cached 2026-06-24). Cache writes cost
-/// 1.25x input for 5 minutes and 2x for 1 hour; cache reads 0.1x input unless a model sets its own.
-/// Fast mode costs twice the standard price.
-#[derive(Clone, Copy)]
-pub struct Price {
-    pub input: f64,
-    pub output: f64,
-    pub read: Option<f64>,
-}
-
-const PRICES: &[(&str, Price)] = &[
-    ("claude-fable-5-1", Price { input: 10.0, output: 50.0, read: Some(0.25) }),
-    ("claude-mythos-5-1", Price { input: 10.0, output: 50.0, read: Some(0.25) }),
-    ("claude-fable-5", Price { input: 10.0, output: 50.0, read: None }),
-    ("claude-mythos-5", Price { input: 10.0, output: 50.0, read: None }),
-    ("claude-opus-5-5", Price { input: 4.0, output: 20.0, read: Some(0.2) }),
-    ("claude-opus-5", Price { input: 5.0, output: 25.0, read: None }),
-    ("claude-opus-4-8", Price { input: 5.0, output: 25.0, read: None }),
-    ("claude-opus-4-7", Price { input: 5.0, output: 25.0, read: None }),
-    ("claude-opus-4-6", Price { input: 5.0, output: 25.0, read: None }),
-    ("claude-sonnet-5", Price { input: 2.0, output: 10.0, read: None }),
-    ("claude-sonnet-4-6", Price { input: 3.0, output: 15.0, read: None }),
-    ("claude-haiku-4-5", Price { input: 1.0, output: 5.0, read: None }),
-];
 
 const USAGE: &str = "Usage: sessionkit usage [options]
 
@@ -115,22 +90,6 @@ fn parse_arguments(argv: &[String]) -> Options {
     options
 }
 
-// ---------------------------------------------------------------- prices
-
-pub fn price_of(model: Option<&str>) -> Option<Price> {
-    let model = model?;
-    let find = |name: &str| PRICES.iter().find(|(key, _)| *key == name).map(|(_, price)| *price);
-    find(model).or_else(|| {
-        let bytes = model.as_bytes();
-        let dated = bytes.len() > 9 && bytes[bytes.len() - 9] == b'-' && bytes[bytes.len() - 8..].iter().all(u8::is_ascii_digit);
-        if dated { find(&model[..model.len() - 9]) } else { None }
-    })
-}
-
-pub fn read_price(price: &Price) -> f64 {
-    price.read.unwrap_or(price.input * 0.1)
-}
-
 #[derive(Clone)]
 struct Call {
     time: f64,
@@ -164,14 +123,12 @@ impl Parts {
 
 /// The cost of one call in USD, split by kind of token; None when the model has no price.
 fn cost_of(call: &Call) -> Option<Parts> {
-    let price = price_of(call.model.as_deref())?;
-    let factor = if call.fast { 2.0 } else { 1.0 };
-    let part = |tokens: f64, per_million: f64| (tokens * per_million * factor) / 1e6;
+    let rate = Rate::of(call.model.as_deref(), call.fast)?;
     Some(Parts {
-        input: part(call.input, price.input),
-        read: part(call.read, read_price(&price)),
-        write: part(call.write5m, price.input * 1.25) + part(call.write1h, price.input * 2.0),
-        output: part(call.output, price.output),
+        input: rate.input(call.input),
+        read: rate.read(call.read),
+        write: rate.write(call.write5m, Ttl::FiveMinutes) + rate.write(call.write1h, Ttl::OneHour),
+        output: rate.output(call.output),
     })
 }
 
@@ -352,7 +309,9 @@ fn rebuilds_of(calls: &[Call]) -> Vec<Rebuild> {
         let call = &pair[1];
         let gap = call.time - pair[0].time;
         let write = call.write5m + call.write1h;
-        if gap > CACHE_TTL_MS && write >= REBUILD_MIN_TOKENS && write > call.read {
+        // The call writes at the lifetime the session uses; within it the cache was still warm.
+        let ttl = if call.write1h > call.write5m { Ttl::OneHour } else { Ttl::FiveMinutes };
+        if gap > ttl.ms() && write >= REBUILD_MIN_TOKENS && write > call.read {
             rebuilds.push(Rebuild { gap, tokens: write, cost: cost_of(call).map_or(0.0, |cost| cost.write) });
         }
     }
@@ -455,7 +414,7 @@ fn summarize(transcripts: &[Transcript], options: &Options) -> Report {
             if file.subagent { session.subagents.add(call) } else { session.main.add(call) }
             let model = call.model.clone().unwrap_or_else(|| "unknown".into());
             by_model.entry(model.clone()).or_default().add(call);
-            if price_of(call.model.as_deref()).is_none() {
+            if Rate::of(call.model.as_deref(), false).is_none() {
                 unpriced_models.insert(model);
             }
         }
@@ -466,7 +425,7 @@ fn summarize(transcripts: &[Transcript], options: &Options) -> Report {
         let calls = &session.calls;
         let rebuilds = rebuilds_of(calls);
         let last = calls.last();
-        let price = last.and_then(|call| price_of(call.model.as_deref()));
+        let rate = last.and_then(|call| Rate::of(call.model.as_deref(), call.fast));
         let last_context = last.map_or(0.0, context_of);
         SessionRow {
             id: session.id.clone(),
@@ -481,10 +440,10 @@ fn summarize(transcripts: &[Transcript], options: &Options) -> Report {
             rebuilds: rebuilds.len(),
             rebuild_cost: rebuilds.iter().fold(0.0, |s, r| s + r.cost),
             // What one more call costs in cache reads now, against a fresh start of about 15k tokens.
-            per_call_now: price.map(|p| (last_context * read_price(&p)) / 1e6),
-            per_call_fresh: price.map(|p| (FRESH_CONTEXT_TOKENS * read_price(&p)) / 1e6),
+            per_call_now: rate.map(|r| r.read(last_context)),
+            per_call_fresh: rate.map(|r| r.read(FRESH_CONTEXT_TOKENS)),
             // What a cold --resume writes once, at the 1-hour cache price Claude Code uses.
-            cold_resume: price.map(|p| (last_context * p.input * 2.0) / 1e6),
+            cold_resume: rate.map(|r| r.write(last_context, Ttl::OneHour)),
         }
     }).collect();
 
@@ -595,7 +554,7 @@ fn render(report: &Report, options: &Options) -> String {
 
     out.push(table("By model", format!("{}{}{}{}", pad("model", 26), lpad("calls", 9), lpad("cost", 11), lpad("share", 7)),
         report.by_model.iter().take(top).map(|(model, row)| format!("{}{}{}{}", pad(model, 26), lpad(&js::grouped(row.calls as f64), 9),
-            lpad(&if price_of(Some(model)).is_some() { usd(row.cost.sum()) } else { "no price".into() }, 11),
+            lpad(&if Rate::of(Some(model), false).is_some() { usd(row.cost.sum()) } else { "no price".into() }, 11),
             lpad(&share(row.cost.sum(), total_cost), 7))).collect()));
 
     out.push(table("Main sessions and subagents",
@@ -622,7 +581,7 @@ fn render(report: &Report, options: &Options) -> String {
     out.push(String::new());
     out.push("Cold cache rebuilds".into());
     out.push(String::new());
-    out.push(format!("{count} calls wrote the context again after a pause of more than 5 minutes: {} tokens, {} ({} of the total). \
+    out.push(format!("{count} calls wrote the context again after a pause longer than the cache lifetime (5 minutes or 1 hour): {} tokens, {} ({} of the total). \
         {after_an_hour} came after more than an hour.", tokens(rebuild_tokens), usd(rebuild_cost), share(rebuild_cost, total_cost)));
     out.push("A heuristic: a large cache write after a pause, larger than the cache read in the same call.".into());
 
@@ -978,6 +937,15 @@ mod tests {
         let seen: Vec<(&str, &str, f64, f64)> = results.iter().map(|(id, r)| (id.as_str(), r.tool.as_str(), r.chars, r.later_calls)).collect();
         // m2 is one call written as two lines; m4 comes after the compaction and reads neither.
         assert_eq!(seen, [("t1", "Bash", 8.0, 2.0), ("t2", "mcp: playwright", 4.0, 1.0)]);
+    }
+
+    #[test]
+    fn a_pause_within_the_one_hour_cache_is_no_rebuild() {
+        let call = |minute: f64, write5m: f64, write1h: f64| Call { time: minute * 60000.0, model: Some("claude-opus-5-5".into()),
+            fast: false, input: 1.0, read: 0.0, write5m, write1h, output: 0.0 };
+        let gaps = |calls: &[Call]| rebuilds_of(calls).iter().map(|r| r.gap / 60000.0).collect::<Vec<f64>>();
+        assert_eq!(gaps(&[call(0.0, 0.0, 50000.0), call(30.0, 0.0, 50000.0), call(100.0, 0.0, 50000.0)]), [70.0]);
+        assert_eq!(gaps(&[call(0.0, 50000.0, 0.0), call(30.0, 50000.0, 0.0)]), [30.0]);
     }
 
     #[test]

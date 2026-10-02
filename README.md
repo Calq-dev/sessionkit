@@ -95,8 +95,9 @@ Read                        2,986     4.0M    29%     1K   67%   49%       15%
 mcp: playwright             2,068     341K     2%    165    9%    4%        3%
 ```
 
-**Cold cache rebuilds** are a heuristic: a call after a pause of more than 5 minutes that
-writes at least 20k tokens to the cache and reads less than it writes.
+**Cold cache rebuilds** are a heuristic: a call after a pause longer than the cache lifetime
+(5 minutes, or 1 hour when the call writes a 1-hour cache) that writes at least 20k tokens to
+the cache and reads less than it writes.
 
 **Cheaper to restart** lists sessions active in the last 14 days whose last context is above
 150k tokens. Per session it shows what one more call costs in cache reads now, the same after
@@ -119,7 +120,7 @@ On a Pro or Max subscription a call costs a share of your usage limits, so it sh
 well, next to the API value of the tokens:
 
 ```text
-context 475K · $0.095/call · 5h 23% (reset 14:10) · 7d 41% · ≈ +0.6%/call · cache warm 40m (cold: $3.80)
+context 475K · $0.095/call · 5h 23% (reset 14:10) · 7d 41% (reset in 3d 4h) · ≈ +0.6%/call · cache warm 40m (cold: $3.80)
 ```
 
 The limits come from Claude Code itself (`rate_limits`). **What one call takes** is an estimate

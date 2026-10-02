@@ -4,6 +4,24 @@ All notable changes to sessionkit, called jev-start before 0.3.0. The format fol
 
 ## [Unreleased]
 
+### Added
+
+- **Weekly reset in the status line.** On a subscription the 7-day limit now shows how long
+  until it resets, for example `7d 41% (reset in 3d 4h)`.
+
+### Fixed
+
+- **Cold cache rebuilds respect the 1-hour cache.** `usage` counted a pause of more than 5
+  minutes as a rebuild, also in sessions that write a 1-hour cache. On the maintainer's
+  transcripts this removed 19 of 161 rebuilds, $56 of $780.
+- **Fast mode in "cheaper to restart".** The cost of one more call and of a cold resume now
+  doubles for a session in fast mode, as the status line already did.
+
+### Changed
+
+- **One place for prices.** The status line, the cold-cache warning and `usage` now price
+  tokens through one module, `src/pricing.rs`.
+
 ## [0.17.1] - 2026-10-02
 
 ### Changed

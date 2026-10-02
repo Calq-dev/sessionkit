@@ -24,6 +24,7 @@ mod js;
 mod measure;
 mod next;
 mod peers;
+mod pricing;
 mod setup;
 mod skills;
 mod start;
