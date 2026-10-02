@@ -1,7 +1,7 @@
 // sessionkit's choice before a message to a cold session: when the prompt cache has expired and
 // writing the context again is expensive, ask in Claude Code's own dialog whether to go on here
 // or in a fresh session with only what matters. In a warm session whose context has grown large
-// (300K tokens by default), ask whether to compact first, since every message re-reads it all. The dialog is the engine's, so asking costs no
+// (375K tokens by default), ask whether to compact first, since every message re-reads it all. The dialog is the engine's, so asking costs no
 // model call. `sessionkit hook cold-check` decides whether to ask and words the question;
 // `sessionkit hook cold-choice` acts on the answer. When anything fails, the message goes through,
 // and the settings hook `sessionkit hook prompt` still stops it once.
@@ -25,7 +25,7 @@ async function sessionkit($, args, input) {
 
 /**
  * A warm session with a large context: compact first, then send the message; or go on as it is;
- * or let Claude Code compact by itself from now on, at about 300K (its /autocompact), which also
+ * or let Claude Code compact by itself from now on, at about 375K (its /autocompact), which also
  * fits a session in auto mode that runs on without new messages. A command cannot run from this
  * hook, which holds the turn, so it runs just after it; compact.js sends the message after /compact.
  */

@@ -49,7 +49,7 @@ function world(on, check, answer) {
   return seen;
 }
 
-const LARGE = { cold: false, large: true, at: "300K", window: 300000, question: "This session has 463K tokens of context. Compact first?" };
+const LARGE = { cold: false, large: true, at: "375K", window: 375000, question: "This session has 463K tokens of context. Compact first?" };
 
 const typed = (text) => ({ text, wait: false, origin: { kind: "composer" } });
 
@@ -108,7 +108,7 @@ test("compact first: /compact runs after the hook, and the message goes out afte
   const clock = mock.clock(on);
   const seen = world(on, LARGE, "Compact first");
   const result = await $.prompt.submit(typed("go on"));
-  expect(seen.asked).toEqual([["Compact first", "Continue", "Always at 300K"]]);
+  expect(seen.asked).toEqual([["Compact first", "Continue", "Always at 375K"]]);
   expect(result.drop).toContain("compacting first");
   await clock.settle();
   expect(seen.commands).toEqual(["compact"]);
@@ -120,10 +120,10 @@ test("compact first: /compact runs after the hook, and the message goes out afte
 
 test("always: Claude Code compacts by itself from now on, and this time too", async ($, on) => {
   const clock = mock.clock(on);
-  const seen = world(on, LARGE, "Always at 300K");
+  const seen = world(on, LARGE, "Always at 375K");
   await $.prompt.submit(typed("go on"));
   await clock.settle();
-  expect(seen.commands).toEqual(["autocompact 300000", "compact"]);
+  expect(seen.commands).toEqual(["autocompact 375000", "compact"]);
 });
 
 test("a large session can go on as it is", async ($, on) => {

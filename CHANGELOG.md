@@ -4,6 +4,14 @@ All notable changes to sessionkit, called jev-start before 0.3.0. The format fol
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-10-02
+
+### Changed
+
+- **Compact later by default.** The large-context prompt now starts at 375K tokens instead of
+  300K. “Always at 375K” sets Claude Code's `/autocompact 375000`. Existing explicit settings
+  and `SESSIONKIT_COMPACT_ABOVE` still take precedence.
+
 ## [0.17.0] - 2026-10-02
 
 ### Added
