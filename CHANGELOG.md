@@ -17,6 +17,11 @@ All notable changes to sessionkit, called jev-start before 0.3.0. The format fol
 - **Fast mode in "cheaper to restart".** The cost of one more call and of a cold resume now
   doubles for a session in fast mode, as the status line already did.
 
+- **A number setting that is empty or no number keeps its default.** An empty
+  `SESSIONKIT_BLOCK_COLD_ABOVE` or `SESSIONKIT_COMPACT_ABOVE` counted as 0, so every cold or
+  warm session got the warning; a typo counted as "never". The same holds for
+  `SESSIONKIT_WARN_RESUME_ABOVE` and `SESSIONKIT_CONFIRM_ABOVE`.
+
 ### Changed
 
 - **One place for prices.** The status line, the cold-cache warning and `usage` now price
