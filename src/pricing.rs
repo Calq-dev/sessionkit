@@ -34,7 +34,7 @@ struct Price {
     read: Option<f64>,
 }
 
-/// From the Claude API model table (cached 2026-06-24). Cache reads cost 0.1x input unless a
+/// From the Claude API model table (cached 2026-09-25). Cache reads cost 0.1x input unless a
 /// model sets its own price.
 const PRICES: &[(&str, Price)] = &[
     ("claude-fable-5-1", Price { input: 10.0, output: 50.0, read: Some(0.25) }),
@@ -46,6 +46,7 @@ const PRICES: &[(&str, Price)] = &[
     ("claude-opus-4-8", Price { input: 5.0, output: 25.0, read: None }),
     ("claude-opus-4-7", Price { input: 5.0, output: 25.0, read: None }),
     ("claude-opus-4-6", Price { input: 5.0, output: 25.0, read: None }),
+    ("claude-sonnet-5-5", Price { input: 2.0, output: 10.0, read: None }),
     ("claude-sonnet-5", Price { input: 2.0, output: 10.0, read: None }),
     ("claude-sonnet-4-6", Price { input: 3.0, output: 15.0, read: None }),
     ("claude-haiku-4-5", Price { input: 1.0, output: 5.0, read: None }),
