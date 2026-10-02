@@ -20,6 +20,7 @@ use crate::peers;
 use crate::next::{env_pid, handoff_key, leave_handoff, ps_field, terminate, transcript_of};
 use crate::start::{ROUTE_CONTINUE, Scored, ask_choice, key_at_hand, read_session, route_to_session};
 use crate::pricing::{Rate, Ttl};
+use crate::transcript::Entry;
 use crate::usage::home;
 use serde_json::{Map, Value, json};
 use std::io::{Read, Write};
@@ -650,11 +651,10 @@ fn compacted(input: &Value) -> Result<Value> {
     loop {
         // The kept messages are written again after the boundary, so it can sit megabytes from the end.
         let text = read_tail(&path, 32 * 1024 * 1024).map_err(|e| e.to_string())?;
-        let boundary = text.split('\n').rev().filter(|line| line.contains("\"compact_boundary\""))
-            .filter_map(js::parse).find(|e| !js::truthy(e.get("isSidechain")));
-        if let Some(entry) = boundary.filter(|e| js::parse_date(js::str_of(e, "timestamp")) >= since) {
-            let metadata = entry.get("compactMetadata").cloned().unwrap_or(Value::Null);
-            return Ok(json!({"found": true, "before": js::num_of(&metadata, "preTokens"), "after": js::num_of(&metadata, "postTokens")}));
+        let boundary = text.split('\n').rev().filter(|line| Entry::may_be_compaction(line))
+            .filter_map(Entry::parse).find(|e| !e.is_sidechain());
+        if let Some(compaction) = boundary.filter(|e| e.time() >= since).and_then(|e| e.compaction()) {
+            return Ok(json!({"found": true, "before": compaction.before, "after": compaction.after}));
         }
         if started.elapsed().as_millis() as u64 >= COMPACTED_WAIT_MS {
             return Ok(json!({"found": false}));

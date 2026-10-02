@@ -15,6 +15,7 @@
 // `sessionkit compact <session>` runs the same selection over a transcript and prints what it
 // would keep, without changing anything.
 
+use crate::transcript::Entry as TranscriptEntry;
 use crate::Result;
 use crate::js;
 use crate::start::{PRICE_PER_MILLION_TOKENS, model, post, session_files};
@@ -704,13 +705,12 @@ fn read_transcript(path: &PathBuf) -> Result<Vec<Message>> {
 /// conversation as the hook would have been handed it at its end.
 pub fn read_segments(path: &PathBuf) -> Result<Vec<Vec<Message>>> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let entries: Vec<Value> = text.lines().filter_map(js::parse).filter(|e| !js::truthy(e.get("isSidechain"))).collect();
     let mut segments = vec![Vec::new()];
-    for entry in &entries {
-        if js::str_of(entry, "subtype") == "compact_boundary" {
+    for entry in text.lines().filter_map(TranscriptEntry::parse).filter(|e| !e.is_sidechain()) {
+        if entry.compaction().is_some() {
             segments.push(Vec::new());
-        } else if ["user", "assistant"].contains(&js::str_of(entry, "type")) {
-            segments.last_mut().unwrap().push(message_from(entry));
+        } else if ["user", "assistant"].contains(&entry.kind()) {
+            segments.last_mut().unwrap().push(message_from(entry.value()));
         }
     }
     Ok(segments)

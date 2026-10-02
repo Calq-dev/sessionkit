@@ -7,7 +7,7 @@
 
 use crate::js;
 use crate::pricing::{Rate, Ttl};
-use serde_json::Value;
+use crate::transcript::Entry;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
@@ -46,45 +46,32 @@ fn last_call(transcript: &Path) -> std::io::Result<Option<LastCall>> {
     let mut compaction: Option<(f64, f64)> = None;
     let mut one_hour = false;
     for line in text.split('\n').rev() {
-        if last.is_none() && compaction.is_none() && line.contains("\"compact_boundary\"") {
-            let entry = js::parse(line).filter(|e| !js::truthy(e.get("isSidechain")));
-            let after = entry.as_ref().and_then(|e| e.get("compactMetadata")).map_or(0.0, |m| js::num_of(m, "postTokens"));
-            if let Some(entry) = entry.filter(|_| after > 0.0) {
-                compaction = Some((js::parse_date(js::str_of(&entry, "timestamp")), after));
+        if last.is_none() && compaction.is_none() && Entry::may_be_compaction(line) {
+            let entry = Entry::parse(line).filter(|e| !e.is_sidechain());
+            if let Some((entry, after)) = entry.and_then(|e| e.compaction().map(|c| (e, c.after))).filter(|&(_, after)| after > 0.0) {
+                compaction = Some((entry.time(), after));
             }
             continue;
         }
-        if !line.contains("\"usage\"") {
+        if !Entry::may_be_call(line) {
             continue;
         }
-        let Some(entry) = js::parse(line) else { continue }; // the first line of the tail can be cut
-        let message = entry.get("message");
-        let usage = message.and_then(|m| m.get("usage")).filter(|u| js::truthy(Some(u)));
-        let model = message.and_then(|m| m.get("model")).and_then(Value::as_str);
-        let Some(usage) = usage else { continue };
-        if js::str_of(&entry, "type") != "assistant" || js::truthy(entry.get("isSidechain")) || model == Some("<synthetic>") {
-            continue;
-        }
-        let one_hour_tokens = usage.get("cache_creation").map_or(0.0, |split| js::num_of(split, "ephemeral_1h_input_tokens"));
-        if one_hour_tokens > 0.0 {
+        let Some(entry) = Entry::parse(line) else { continue }; // the first line of the tail can be cut
+        let Some(call) = entry.api_call().filter(|_| !entry.is_sidechain()) else { continue };
+        if call.write1h > 0.0 {
             one_hour = true;
         }
         if last.is_none() {
-            let read = js::num_of(usage, "cache_read_input_tokens");
-            let write = js::num_of(usage, "cache_creation_input_tokens");
-            let (time, context) = compaction.unwrap_or((
-                js::parse_date(js::str_of(&entry, "timestamp")),
-                js::num_of(usage, "input_tokens") + read + write,
-            ));
+            let (time, context) = compaction.unwrap_or((entry.time(), call.context()));
             last = Some(LastCall {
                 time,
-                model: model.map(str::to_string),
-                fast: usage.get("speed").and_then(Value::as_str) == Some("fast"),
+                fast: call.fast,
                 context,
-                read: if compaction.is_some() { 0.0 } else { read },
-                write: if compaction.is_some() { context } else { write },
+                read: if compaction.is_some() { 0.0 } else { call.read },
+                write: if compaction.is_some() { context } else { call.write() },
                 ttl: Ttl::FiveMinutes,
                 compacted: compaction.is_some(),
+                model: call.model,
             });
         }
         if last.is_some() && one_hour {
@@ -131,7 +118,7 @@ pub fn cache_state(transcript: &Path) -> Option<CacheState> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     fn state_of(name: &str, lines: &[Value]) -> CacheState {
         let path = std::env::temp_dir().join(format!("sessionkit-cache-{name}-{}.jsonl", std::process::id()));
