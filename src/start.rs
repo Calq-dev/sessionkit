@@ -68,7 +68,7 @@ fn setting(name: &str) -> Option<String> {
 }
 
 pub fn confirm_above() -> f64 {
-    setting("CONFIRM_ABOVE").map_or(0.05, |value| js::parse_number(Some(&value)))
+    js::number_or(setting("CONFIRM_ABOVE").as_deref(), 0.05)
 }
 
 fn cache_dir() -> PathBuf {

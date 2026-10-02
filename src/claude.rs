@@ -40,7 +40,7 @@ const DIM: &str = "\x1b[2m";
 const RESET: &str = "\x1b[0m";
 
 fn setting(name: &str, fallback: f64) -> f64 {
-    std::env::var(format!("SESSIONKIT_{name}")).map_or(fallback, |value| js::parse_number(Some(&value)))
+    js::number_or(std::env::var(format!("SESSIONKIT_{name}")).ok().as_deref(), fallback)
 }
 
 fn cache_dir() -> PathBuf {

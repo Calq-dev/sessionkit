@@ -200,6 +200,13 @@ pub fn grouped(value: f64) -> String {
     if value < 0.0 { format!("-{out}") } else { out }
 }
 
+/// A number setting: the fallback when the text is missing, empty or not a number, so a typo
+/// does not turn a check off (NaN) or on for everything (0).
+pub fn number_or(text: Option<&str>, fallback: f64) -> f64 {
+    let value = text.filter(|text| !trim(text).is_empty()).map_or(f64::NAN, |text| parse_number(Some(text)));
+    if value.is_nan() { fallback } else { value }
+}
+
 /// Number(text): a number, NaN when the text is not one, 0 for an empty text.
 pub fn parse_number(text: Option<&str>) -> f64 {
     let Some(text) = text else { return f64::NAN };
@@ -496,6 +503,16 @@ pub fn pool<T: Sync, R: Send>(items: &[T], concurrency: usize, task: impl Fn(&T,
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_setting_that_is_no_number_keeps_its_default() {
+        assert_eq!(number_or(Some("500000"), 375_000.0), 500_000.0);
+        assert_eq!(number_or(Some(" 2.5 "), 1.0), 2.5);
+        assert_eq!(number_or(Some(""), 375_000.0), 375_000.0);
+        assert_eq!(number_or(Some("abc"), 375_000.0), 375_000.0);
+        assert_eq!(number_or(None, 1.0), 1.0);
+        assert_eq!(number_or(Some("Infinity"), 1.0), f64::INFINITY);
+    }
 
     #[test]
     fn fixed_rounds_ties_up_like_javascript() {
