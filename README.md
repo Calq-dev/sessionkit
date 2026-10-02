@@ -119,7 +119,7 @@ On a Pro or Max subscription a call costs a share of your usage limits, so it sh
 well, next to the API value of the tokens:
 
 ```text
-context 475K · $0.095/call · 5h 23% (reset 14:10) · 7d 41% · ≈ +0.6%/call · cache warm 40m (cold: $3.80)
+context 475K · $0.095/call · 5h 23% (reset 14:10) · 7d 41% (reset in 3d 4h) · ≈ +0.6%/call · cache warm 40m (cold: $3.80)
 ```
 
 The limits come from Claude Code itself (`rate_limits`). **What one call takes** is an estimate
