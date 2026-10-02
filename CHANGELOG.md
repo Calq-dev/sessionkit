@@ -4,6 +4,8 @@ All notable changes to sessionkit, called jev-start before 0.3.0. The format fol
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-10-02
+
 ### Added
 
 - **The large-context dialog also looks at subagents.** When a subagent of the session has
@@ -33,6 +35,11 @@ All notable changes to sessionkit, called jev-start before 0.3.0. The format fol
   block, and `usage` took the output count of the first line, which for subagents is often the
   count at the start of the stream. It now takes the highest. On the maintainer's transcripts
   output went from 31.8M to 48.6M tokens, $870 to $1,370.
+
+### Changed
+
+- **The robot output style refers to the person in the third person**, as "the user" in the
+  language of the chat, and writes a step for the person as a statement, not a command.
 
 ## [0.18.0] - 2026-10-02
 
