@@ -198,25 +198,20 @@ fn ask(question: &str) -> bool {
     js::stdin_is_tty() && js::ask(question).to_lowercase().starts_with('y')
 }
 
-pub fn setup_main(argv: &[String]) -> Result<()> {
-    let options = parse_arguments(argv);
-    let settings: Value = if options.settings.exists() {
-        let text = std::fs::read_to_string(&options.settings).map_err(|e| e.to_string())?;
-        serde_json::from_str(&text).map_err(|error| format!("{}: {error}", options.settings.display()))?
-    } else {
-        json!({})
-    };
-    let Value::Object(mut next) = settings.clone() else { return Err(format!("{} is not a JSON object.", options.settings.display())) };
+/// Claude Code's settings with sessionkit's status line, hooks and env put in, or taken out with
+/// `remove`, and a line for each change. `replace` decides on a status line that is not ours; it
+/// gets that status line's command. None when the settings are not a JSON object.
+fn edit_settings(settings: &Value, command: &str, remove: bool, replace: impl FnOnce(&str) -> bool) -> Option<(Value, Vec<String>)> {
+    let Value::Object(mut next) = settings.clone() else { return None };
     let mut hooks = without_our_hooks(settings.get("hooks"));
     // The hooks keep their place among the settings, or come last, as a spread in JavaScript
     // puts them: before a status line that is added below.
     next.insert("hooks".into(), json!({}));
     let mut messages: Vec<String> = Vec::new();
-    let command = sessionkit_command();
 
     let current = settings.get("statusLine").and_then(|s| s.get("command")).and_then(Value::as_str).unwrap_or("").to_string();
     let status_line_is_ours = ours(&current);
-    if options.remove {
+    if remove {
         if status_line_is_ours {
             next.shift_remove("statusLine");
             messages.push("removed the status line".into());
@@ -226,9 +221,7 @@ pub fn setup_main(argv: &[String]) -> Result<()> {
             messages.push(format!("kept {FUNCTION_HOOKS}; other plugins may use function hooks too"));
         }
     } else {
-        let replace = !js::truthy(settings.get("statusLine")) || status_line_is_ours || options.force
-            || ask(&format!("There is a status line already:\n  {current}\nReplace it with sessionkit's? [y/N] "));
-        if replace {
+        if !js::truthy(settings.get("statusLine")) || status_line_is_ours || replace(&current) {
             next.insert("statusLine".into(), json!({"type": "command", "command": format!("{command} statusline"), "refreshInterval": 60}));
             messages.push("status line: context, cost per call and cache time".into());
         } else {
@@ -256,18 +249,35 @@ pub fn setup_main(argv: &[String]) -> Result<()> {
     } else {
         next.insert("hooks".into(), Value::Object(hooks));
     }
+    Some((Value::Object(next), messages))
+}
 
-    let text = format!("{}\n", js::stringify_pretty(&Value::Object(next)));
+/// A zsh startup file with sessionkit's block in place of an earlier one, or without it.
+fn edit_zshrc(zshrc: &str, command: &str, remove: bool) -> String {
+    let kept = without_zsh_block(zshrc);
+    if remove {
+        return kept;
+    }
+    let joined = format!("{}\n\n{}\n", kept.trim_end_matches('\n'), zsh_block(command));
+    joined.trim_start_matches('\n').to_string()
+}
+
+pub fn setup_main(argv: &[String]) -> Result<()> {
+    let options = parse_arguments(argv);
+    let settings: Value = if options.settings.exists() {
+        let text = std::fs::read_to_string(&options.settings).map_err(|e| e.to_string())?;
+        serde_json::from_str(&text).map_err(|error| format!("{}: {error}", options.settings.display()))?
+    } else {
+        json!({})
+    };
+    let command = sessionkit_command();
+    let replace = |current: &str| options.force || ask(&format!("There is a status line already:\n  {current}\nReplace it with sessionkit's? [y/N] "));
+    let (next, mut messages) = edit_settings(&settings, &command, options.remove, replace)
+        .ok_or_else(|| format!("{} is not a JSON object.", options.settings.display()))?;
+
+    let text = format!("{}\n", js::stringify_pretty(&next));
     let zshrc = options.zshrc.as_ref().filter(|path| path.exists()).and_then(|path| std::fs::read_to_string(path).ok()).unwrap_or_default();
-    let next_zshrc = options.zshrc.as_ref().map(|_| {
-        if options.remove {
-            without_zsh_block(&zshrc)
-        } else {
-            let kept = without_zsh_block(&zshrc);
-            let joined = format!("{}\n\n{}\n", kept.trim_end_matches('\n'), zsh_block(&command));
-            joined.trim_start_matches('\n').to_string()
-        }
-    });
+    let next_zshrc = options.zshrc.as_ref().map(|_| edit_zshrc(&zshrc, &command, options.remove));
     if options.dry_run {
         println!("{text}");
         if let (Some(path), Some(next_zshrc)) = (&options.zshrc, &next_zshrc) {
@@ -396,4 +406,68 @@ fn install_plugin(options: &Options, settings: &Value) -> Result<()> {
         println!("  - fast-jev-compaction is enabled too; it does the same job. Turn one off: claude plugin disable fast-jev-compaction@fast-jev-compaction");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn setup(settings: &Value) -> Value {
+        edit_settings(settings, "/opt/sessionkit", false, |_| false).unwrap().0
+    }
+
+    fn remove(settings: &Value) -> Value {
+        edit_settings(settings, "/opt/sessionkit", true, |_| false).unwrap().0
+    }
+
+    #[test]
+    fn setup_twice_gives_the_same_settings() {
+        let once = setup(&json!({"theme": "dark"}));
+        assert_eq!(setup(&once), once);
+        assert_eq!(once["hooks"]["UserPromptSubmit"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn remove_leaves_the_other_settings_and_hooks_alone() {
+        let theirs = json!({"model": "opus", "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "say done"}]}]}});
+        let mut expected = theirs.clone();
+        // Other plugins may use function hooks too, so remove keeps the env setting.
+        expected["env"] = json!({FUNCTION_HOOKS: "1"});
+        assert_eq!(remove(&setup(&theirs)), expected);
+    }
+
+    #[test]
+    fn the_entries_of_the_javascript_version_are_replaced() {
+        let old = json!({"hooks": {"UserPromptSubmit": [{"hooks": [
+            {"type": "command", "command": "node /x/sessionkit.mjs hook prompt"}, {"type": "command", "command": "other-tool"}]}]}});
+        let commands: Vec<String> = setup(&old)["hooks"]["UserPromptSubmit"].as_array().unwrap().iter()
+            .flat_map(|group| group["hooks"].as_array().unwrap().iter().map(|hook| hook["command"].as_str().unwrap().to_string())).collect();
+        assert_eq!(commands, ["other-tool", "/opt/sessionkit hook prompt"]);
+    }
+
+    #[test]
+    fn a_status_line_that_is_not_ours_is_replaced_only_when_the_caller_agrees() {
+        let theirs = json!({"statusLine": {"type": "command", "command": "ccstatus"}});
+        let mut asked = Vec::new();
+        let (kept, _) = edit_settings(&theirs, "/opt/sessionkit", false, |current| { asked.push(current.to_string()); false }).unwrap();
+        assert_eq!(kept["statusLine"]["command"], "ccstatus");
+        assert_eq!(asked, ["ccstatus"]);
+        let (replaced, _) = edit_settings(&theirs, "/opt/sessionkit", false, |_| true).unwrap();
+        assert_eq!(replaced["statusLine"]["command"], "/opt/sessionkit statusline");
+        edit_settings(&replaced, "/opt/sessionkit", false, |_| panic!("asked about our own status line")).unwrap();
+    }
+
+    #[test]
+    fn settings_that_are_not_an_object_are_refused() {
+        assert!(edit_settings(&json!([1, 2]), "/opt/sessionkit", false, |_| false).is_none());
+    }
+
+    #[test]
+    fn the_zsh_block_is_replaced_once_and_removed_cleanly() {
+        let before = "alias a=b\n";
+        let once = edit_zshrc(before, "/opt/sessionkit", false);
+        assert_eq!(edit_zshrc(&once, "/opt/sessionkit", false), once);
+        assert_eq!(once.matches(ZSH_START).count(), 1);
+        assert_eq!(edit_zshrc(&once, "/opt/sessionkit", true), before);
+    }
 }
