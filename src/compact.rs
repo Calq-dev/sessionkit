@@ -18,7 +18,8 @@
 use crate::transcript::Entry as TranscriptEntry;
 use crate::Result;
 use crate::js;
-use crate::start::{PRICE_PER_MILLION_TOKENS, model, post, session_files};
+use crate::jev::{PRICE_PER_MILLION_TOKENS, model, post};
+use crate::start::{session_files};
 use crate::usage::projects_dir;
 use regex::Regex;
 use serde_json::{Map, Value, json};

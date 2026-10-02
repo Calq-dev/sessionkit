@@ -14,7 +14,8 @@
 use crate::Result;
 use crate::compact::{Message, PRESERVE_RECENT_MESSAGES, TRUNCATE_HEAD_CHARS, ToolUse, goal, read_segments};
 use crate::js;
-use crate::start::{PRICE_PER_MILLION_TOKENS, ask_choice, session_files};
+use crate::jev::{PRICE_PER_MILLION_TOKENS, ask_choice};
+use crate::start::{session_files};
 use regex::Regex;
 use serde_json::{Value, json};
 use std::collections::HashSet;
