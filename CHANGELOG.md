@@ -4,6 +4,36 @@ All notable changes to sessionkit, called jev-start before 0.3.0. The format fol
 
 ## [Unreleased]
 
+### Added
+
+- **The large-context dialog also looks at subagents.** When a subagent of the session has
+  passed the line (375K, `SESSIONKIT_COMPACT_ABOVE`) while the main session is below it and no
+  auto-compact window is set, the dialog offers to set one with `/autocompact 375000`. Without a
+  window a subagent never compacts; Claude Code has one window for the main session and its
+  subagents. Asked once per session. On the maintainer's transcripts subagents were half of all
+  cost and compacted 3 times in 618 transcripts.
+- **Effort per prompt, in shadow.** About two thirds of the output of main sessions here is
+  thinking, at the effort level picked once for the session. At the first model request of a
+  turn you typed, Jev says which effort level is enough for the prompt, and `hook effort-route`
+  logs that beside the level the turn ran at, in `~/.cache/sessionkit/effort-routes.jsonl`. It
+  changes nothing. With the plugin option *Lower the effort per prompt*, off by default, the
+  turn runs at Jev's level when that is lower. The prompt cache holds on Opus 5.5 and Sonnet
+  5.5 (measured: the lowered turn and the one after it each read the whole context from the cache);
+  it stays off until Jev's answers are measured.
+- **Fold a turn when it ends (option, off by default).** When a turn ends that added 20,000
+  characters of tool output or more, the output of each call that changed no file is cut to its
+  first 300 characters, by a compaction the plugin starts itself (`sessionkit compact --fold`,
+  without Jev). Every earlier message stays as it is, so the prompt cache holds: on a turn that
+  read a file of 22K tokens, the next call read 51.6K from the cache and wrote 0.8K, where the
+  context had been 74.5K. Interactive sessions only. Turn it on in `/config`.
+
+### Fixed
+
+- **`usage` counts the whole output of a call.** Claude Code writes a response as a line per
+  block, and `usage` took the output count of the first line, which for subagents is often the
+  count at the start of the stream. It now takes the highest. On the maintainer's transcripts
+  output went from 31.8M to 48.6M tokens, $870 to $1,370.
+
 ## [0.18.0] - 2026-10-02
 
 ### Added

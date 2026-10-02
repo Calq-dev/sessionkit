@@ -500,6 +500,53 @@ fn large_check(id: &str, state: &CacheState) -> Result<Value> {
     }))
 }
 
+const SUBAGENT_TAIL_BYTES: u64 = 2 * 1024 * 1024;
+/// Claude Code compacts at its window less what it keeps free: 20K for the answer and a 13K buffer.
+const WINDOW_RESERVE: f64 = 33_000.0;
+
+/// The context of a subagent's last API call. Its rows are all sidechain, which cache_state skips.
+fn subagent_context(transcript: &Path) -> Option<f64> {
+    let text = read_tail(transcript, SUBAGENT_TAIL_BYTES).ok()?;
+    text.split('\n').rev().filter(|line| Entry::may_be_call(line))
+        .find_map(|line| Entry::parse(line)?.api_call().map(|call| call.context()))
+}
+
+/// The largest subagent of this session at or above the line, while the main session is below
+/// it and Claude Code has no auto-compact window: without one a subagent never compacts, and the
+/// question for a large main session never comes.
+fn subagent_state(input: &Value, above: f64, window_set: bool) -> Option<f64> {
+    let path = js::str_of(input, "transcript_path");
+    if window_set || path.is_empty() || transcript_state(input).is_some_and(|state| state.context >= above) {
+        return None;
+    }
+    let folder = Path::new(path).with_extension("").join("subagents");
+    js::read_dir_names(&folder).ok()?.iter().filter(|name| name.ends_with(".jsonl"))
+        .filter_map(|name| subagent_context(&folder.join(name)))
+        .filter(|&context| context >= above)
+        .max_by(f64::total_cmp)
+}
+
+fn subagent_ack_file(id: &str) -> PathBuf {
+    cache_dir().join("subagent-ack").join(id)
+}
+
+/// The question for a session with a large subagent, asked once per session: only the window,
+/// since the main session is small and has nothing to /compact.
+fn subagent_check(context: f64, above: f64) -> Value {
+    json!({
+        "cold": false,
+        "subagent": true,
+        "at": tokens(above),
+        "window": js::round(above),
+        "question": format!("A subagent of this session has {} tokens of context, and each of its calls re-reads all of \
+            it. Subagents compact only when Claude Code has an auto-compact window, and none is set. The window is \
+            shared with the main session: with /autocompact {} both compact at about {}, subagents \
+            started from then on. Compacting keeps all text and drops tool output that is no longer needed. Set the \
+            window?",
+            tokens(context), js::number(js::round(above)), tokens(above - WINDOW_RESERVE)),
+    })
+}
+
 /// For the plugin's prompt.submit hook: is this session cold and expensive, and can a fresh
 /// session be opened in this terminal? The dialog's question comes from here, and the route of
 /// the fresh session: continue this one, or, for new work, start from the sessions that fit it.
@@ -511,6 +558,14 @@ fn cold_check(input: &Value) -> Result<Value> {
         if !prompt.starts_with('/') {
             if let Some(state) = large_state(&input).filter(|state| !large_acked(&id, state)) {
                 return large_check(&id, &state);
+            }
+            let ack = subagent_ack_file(&id);
+            if !ack.exists() {
+                if let Some(context) = subagent_state(&input, compact_above(), own_auto_compact()) {
+                    std::fs::create_dir_all(ack.parent().unwrap()).map_err(|e| e.to_string())?;
+                    std::fs::write(&ack, js::number(context)).map_err(|e| e.to_string())?;
+                    return Ok(subagent_check(context, compact_above()));
+                }
             }
         }
         return Ok(json!({"cold": false}));
@@ -641,6 +696,57 @@ fn agent_route(input: &Value) -> Result<Value> {
     Ok(json!({"ok": true, "proposal": {"model": model, "effort": effort}}))
 }
 
+const LAST_ANSWER_TAIL: u64 = 512 * 1024;
+
+/// The last text the main loop wrote in a transcript: what a prompt such as "yes" replies to.
+fn last_answer(transcript: &str) -> String {
+    transcript.split('\n').rev().filter_map(Entry::parse).filter(|e| e.kind() == "assistant" && !e.is_sidechain())
+        .find_map(|e| {
+            let blocks = e.value().get("message")?.get("content")?.as_array()?;
+            let text = blocks.iter().filter(|block| js::str_of(block, "type") == "text")
+                .map(|block| js::str_of(block, "text")).collect::<Vec<_>>().join("\n");
+            (!js::trim(&text).is_empty()).then_some(text)
+        }).unwrap_or_default()
+}
+
+fn effort_state(prompt: &str, before: &str) -> Value {
+    json!({"prompt": js::clip(prompt, 6000), "before": js::clip_middle(before, 2500)})
+}
+
+/// For the plugin's turn.step hook: the effort level Jev finds enough for a prompt the person
+/// typed, logged beside the level its turn ran at. The plugin applies it only with its option
+/// applyEffort; without it this is a shadow log, for a measurement.
+fn effort_route(input: &Value) -> Result<Value> {
+    if !key_at_hand() {
+        return Ok(json!({"ok": false, "reason": "no TypeSafe key at hand"}));
+    }
+    let before = transcript_of(js::str_of(input, "session_id"))
+        .and_then(|path| read_tail(&path, LAST_ANSWER_TAIL).ok()).map(|text| last_answer(&text)).unwrap_or_default();
+    let (answer, used) = ask_choice(&effort_state(js::str_of(input, "prompt"), &before), json!({
+        "instructions": "Which is the lowest effort level at which a coding agent will do well what `prompt` asks? \
+            `prompt` is what the person typed in a running session; `before` is the last thing the agent said, which a \
+            short prompt replies to. Too low an effort on work that needs thought costs more later.",
+        "criteria": criteria(&AGENT_EFFORTS),
+    }))?;
+    let effort = answer.as_ref().map_or("", |a| js::str_of(a, "choice")).to_string();
+    let record = json!({
+        "time": num(js::now()),
+        "session_id": js::str_of(input, "session_id"),
+        "turn_id": js::str_of(input, "turn_id"),
+        "prompt": js::clip(js::str_of(input, "prompt"), 200),
+        "model": js::str_of(input, "model"),
+        "effort": input.get("effort").cloned().unwrap_or(Value::Null),
+        "proposal": {"effort": effort},
+        "probabilities": {"effort": answer.and_then(|a| a.get("probabilities").cloned()).unwrap_or(Value::Null)},
+        "tokens": num(used),
+    });
+    let file = cache_dir().join("effort-routes.jsonl");
+    std::fs::create_dir_all(cache_dir()).map_err(|e| e.to_string())?;
+    let mut log = std::fs::OpenOptions::new().create(true).append(true).open(&file).map_err(|e| e.to_string())?;
+    writeln!(log, "{}", js::stringify(&record)).map_err(|e| e.to_string())?;
+    Ok(json!({"ok": true, "proposal": {"effort": effort}}))
+}
+
 const COMPACTED_WAIT_MS: u64 = 10_000;
 
 /// For the plugin, once its compaction is in: the tokens before and after, as Claude Code
@@ -679,6 +785,10 @@ pub fn hook_main(argv: &[String]) -> Result<()> {
         }
         Some("agent-route") => {
             println!("{}", js::stringify(&agent_route(&input)?));
+            return Ok(());
+        }
+        Some("effort-route") => {
+            println!("{}", js::stringify(&effort_route(&input)?));
             return Ok(());
         }
         Some("cold-choice") => {
@@ -724,10 +834,85 @@ mod tests {
     }
 
     #[test]
+    fn a_short_prompt_is_judged_with_the_answer_it_replies_to() {
+        let entry = |kind: &str, sidechain: bool, content: Value| {
+            js::stringify(&json!({"type": kind, "isSidechain": sidechain, "message": {"content": content}}))
+        };
+        let transcript = [
+            entry("assistant", false, json!([{"type": "text", "text": "Done."}])),
+            entry("user", false, json!("and the parser?")),
+            entry("assistant", false, json!([{"type": "thinking", "thinking": "hm"}, {"type": "text", "text": "Shall I rewrite the parser?"}])),
+            entry("assistant", true, json!([{"type": "text", "text": "A subagent's report."}])),
+            entry("assistant", false, json!([{"type": "tool_use", "name": "Read", "input": {}}])),
+            entry("user", false, json!("ja")),
+        ].join("\n");
+        assert_eq!(last_answer(&transcript), "Shall I rewrite the parser?");
+        assert_eq!(last_answer("{\"type\": \"user\"}\nnot json"), "");
+        assert_eq!(effort_state("ja", "Shall I rewrite the parser?"), json!({"prompt": "ja", "before": "Shall I rewrite the parser?"}));
+    }
+
+    #[test]
     fn the_weekly_reset_shows_days_and_hours_left() {
         assert_eq!(time_left(3.0 * 86400000.0 + 4.5 * 3600000.0), "3d 4h");
         assert_eq!(time_left(86400000.0), "1d 0h");
         assert_eq!(time_left(5.0 * 3600000.0 + 7.0 * 60000.0), "5h07");
         assert_eq!(time_left(-1000.0), "1m");
+    }
+
+    const LINE: f64 = 375_000.0;
+
+    fn call(context: f64, sidechain: bool) -> String {
+        json!({"type": "assistant", "isSidechain": sidechain, "timestamp": "2026-10-02T09:00:00Z", "message": {"model": "claude-opus-5-5",
+            "usage": {"input_tokens": 10, "cache_read_input_tokens": context - 10.0, "cache_creation_input_tokens": 0}}}).to_string() + "\n"
+    }
+
+    /// A project folder with a main transcript and one subagent transcript per context given.
+    fn session(name: &str, main: f64, subagents: &[f64]) -> Value {
+        let folder = std::env::temp_dir().join(format!("sessionkit-subagents-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(folder.join("session-1").join("subagents")).unwrap();
+        std::fs::write(folder.join("session-1.jsonl"), call(main, false)).unwrap();
+        for (index, context) in subagents.iter().enumerate() {
+            let rows = call(90_000.0, true) + &call(*context, true) + "{\"type\":\"user\",\"isSidechain\":true}\n";
+            std::fs::write(folder.join("session-1").join("subagents").join(format!("agent-{index}.jsonl")), rows).unwrap();
+        }
+        json!({"session_id": "session-1", "transcript_path": folder.join("session-1.jsonl").to_string_lossy()})
+    }
+
+    #[test]
+    fn the_largest_subagent_above_the_line_is_asked_about() {
+        let input = session("above", 80_000.0, &[120_000.0, 410_000.0, 390_000.0]);
+        assert_eq!(subagent_state(&input, LINE, false), Some(410_000.0));
+    }
+
+    #[test]
+    fn subagents_below_the_line_ask_nothing() {
+        assert_eq!(subagent_state(&session("below", 80_000.0, &[120_000.0, 374_999.0]), LINE, false), None);
+        assert_eq!(subagent_state(&session("none", 80_000.0, &[]), LINE, false), None);
+        assert_eq!(subagent_state(&json!({"session_id": "s", "transcript_path": ""}), LINE, false), None);
+    }
+
+    #[test]
+    fn a_window_that_is_set_asks_nothing_about_subagents() {
+        assert_eq!(subagent_state(&session("window", 80_000.0, &[410_000.0]), LINE, true), None);
+    }
+
+    #[test]
+    fn a_large_main_session_keeps_its_own_question() {
+        assert_eq!(subagent_state(&session("main", 400_000.0, &[410_000.0]), LINE, false), None);
+    }
+
+    #[test]
+    fn the_subagent_question_offers_the_window_and_says_it_is_shared() {
+        let check = subagent_check(410_000.0, LINE);
+        assert_eq!(check["subagent"], json!(true));
+        assert_eq!(check["cold"], json!(false));
+        assert!(check.get("large").is_none());
+        assert_eq!(check["at"], json!("375K"));
+        assert_eq!(check["window"], json!(375_000.0));
+        let question = check["question"].as_str().unwrap();
+        assert!(question.contains("A subagent of this session has 410K tokens"), "{question}");
+        assert!(question.contains("shared with the main session"), "{question}");
+        assert!(question.contains("about 342K"), "{question}");
     }
 }

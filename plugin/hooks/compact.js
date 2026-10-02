@@ -14,6 +14,8 @@ import { waiting } from "./waiting.js";
 const SESSIONKIT = "__SESSIONKIT__";
 const TIMEOUT_MS = 180_000;
 const COMPACTED_TIMEOUT_MS = 15_000;
+/** The instructions of the compaction that fold.js starts after a turn: its own hook answers it. */
+export const FOLD = "sessionkit: fold the last turn";
 
 /** 912612 → "913K". */
 const thousands = (tokens) => `${Math.round(tokens / 1000)}K`;
@@ -48,7 +50,7 @@ async function sendWaiting($, since) {
 }
 
 /** The messages without the engine's handles and stored records: what sessionkit reads. */
-function plain(messages) {
+export function plain(messages) {
   return messages.map((m) => ({
     role: m.role,
     text: m.text,
@@ -61,7 +63,7 @@ function plain(messages) {
  * The plan applied: a kept message is the engine's own, handle and all; a rebuilt one takes its
  * tool blocks from the original, with the output cut where the plan says so.
  */
-function apply(messages, plan) {
+export function apply(messages, plan) {
   return plan.map((step) => {
     if (step.keep !== undefined) return messages[step.keep];
     const m = messages[step.from];
@@ -85,6 +87,7 @@ function apply(messages, plan) {
 /** @type {import('claude-code').Register} */
 export const register = (on) => {
   on("session.compact", async ($, event, next) => {
+    if (event.instructions === FOLD) return next(event);
     const since = Date.now();
     // Claude Code's own summary; a message the person is waiting to send goes out after it.
     const summarized = async () => {
