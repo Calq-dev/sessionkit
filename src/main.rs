@@ -28,6 +28,7 @@ mod pricing;
 mod setup;
 mod skills;
 mod start;
+mod transcript;
 mod trim;
 mod usage;
 
