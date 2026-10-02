@@ -20,6 +20,7 @@ mod cache;
 mod claude;
 mod compact;
 mod grep;
+mod jev;
 mod js;
 mod measure;
 mod next;

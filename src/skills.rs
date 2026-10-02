@@ -17,7 +17,8 @@
 use crate::Result;
 use crate::js;
 use crate::measure::Random;
-use crate::start::{PRICE_PER_MILLION_TOKENS, confirm_above, model, post, read_session, session_files, start_estimate, stop_estimate};
+use crate::jev::{PRICE_PER_MILLION_TOKENS, model, post, start_estimate, stop_estimate};
+use crate::start::{confirm_above, read_session, session_files};
 use crate::usage::home;
 use regex::Regex;
 use serde_json::{Map, Value, json};

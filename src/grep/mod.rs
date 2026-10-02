@@ -124,7 +124,7 @@ pub fn grep_main(argv: &[String]) -> Result<()> {
     }
     let run = || -> Result<(String, i32)> {
         let reader = fs::Reader::new(&options.root, options.policy, &protected_paths(), &CANCELLED)?;
-        let key = crate::start::typesafe_key()?;
+        let key = crate::auth::typesafe_key()?;
         let cache = (!options.no_cache).then(|| evaluator::Cache::new(home().join(".cache").join("sessionkit").join("grep")));
         let evaluator = evaluator::Evaluator::new(key, options.concurrency, options.policy.version(), cache, &CANCELLED);
         let outcome = retrieve::retrieve(&reader, &evaluator, &options.query, &CANCELLED)?;
