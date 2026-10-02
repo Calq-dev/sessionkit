@@ -15,6 +15,7 @@
 // A prompt without a command means start.
 
 mod ask;
+mod auth;
 mod cache;
 mod claude;
 mod compact;
@@ -39,6 +40,7 @@ Usage:
   sessionkit measure [options]          measure the selection of start (costs money)
   sessionkit statusline                 Claude Code status line: context, cost per call, cache
   sessionkit hook session-start|prompt  Claude Code hooks: warn on a costly resume or cold message
+  sessionkit auth login|logout|status   configure the TypeSafe API key for Jev
   sessionkit setup [--remove]           install the status line and hooks in Claude Code
   sessionkit grep \"question\" [root]     find code by asking what it does (Jev, about $0.0005 a file)
   sessionkit ask <file> \"question\"      ask about a file instead of reading it (Jev, about $0.0005 a file)
@@ -76,6 +78,7 @@ fn main() {
         "statusline" => claude::statusline_main(),
         "hook" => claude::hook_main(rest),
         "setup" => setup::setup_main(rest),
+        "auth" => auth::auth_main(rest),
         "grep" => grep::grep_main(rest),
         "ask" => ask::ask_main(rest),
         "compact" => compact::compact_main(rest),

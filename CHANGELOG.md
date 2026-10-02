@@ -4,6 +4,22 @@ All notable changes to sessionkit, called jev-start before 0.3.0. The format fol
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-10-02
+
+### Added
+
+- **Explicit key setup for Jev / TypeSafe.** `sessionkit auth login` accepts a key without
+  terminal echo and stores it in the macOS Keychain; `--stdin` supports automation without
+  putting secrets in process arguments. `auth status` shows only the credential source, and
+  `auth logout` removes current and legacy stored keys. Login does not make an API request.
+
+### Changed
+
+- **No personal 1Password default.** The hardcoded vault and item have been removed. Set
+  `SESSIONKIT_OP_REFERENCE=op://vault/item/field` to opt into a 1Password CLI fallback.
+  `TYPESAFE_API_KEY` still takes precedence, followed by the Keychain. A refused Keychain key
+  without a configured fallback now asks you to log in again instead of invoking 1Password.
+
 ### Fixed
 
 - **`usage --tools` counts images.** It left them out; a screenshot costs up to 4,784 tokens and
