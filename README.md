@@ -51,8 +51,8 @@ To build it yourself: `cargo build --release` puts the binary in `target/release
 A tag such as `v0.8.0` builds a release for Apple Silicon and Intel and updates the formula in
 `Calq-dev/homebrew-tap`.
 
-`start` and `measure` also need the TypeSafe key: they read it from 1Password
-(`op://Calq/TypeSafe API/credential`) once and keep it in the keychain. `usage`, the status
+Jev commands (including `start`, `measure`, `grep` and `ask`) need your own TypeSafe key.
+Run `sessionkit auth login` to store it in the macOS Keychain, or set `TYPESAFE_API_KEY`. `usage`, the status
 line and the hooks need no key and no network.
 
 ## sessionkit usage
@@ -80,8 +80,9 @@ session starts again at zero; compared with the transcripts it came out both too
 high.
 
 **`--tools`** shows which tools fill the context. Per tool: how many results, their size in
-tokens (the text, at 4 characters a token; images are left out), the part that came in results
-above 10k and 20k characters, and **re-read**: each result times the API calls after it, up to
+tokens (the text at 4 characters a token; each image at the visual tokens Claude counts for its
+size, one per 28x28 pixels after the resize of its model's tier), the part of the text that came
+in results above 10k and 20k characters, and **re-read**: each result times the API calls after it, up to
 the next compaction. Every such call reads the result again from the cache, so re-read is where
 the cache reads go. MCP tools appear by their server's name. The output holds only tool names and
 numbers, so you can share it as it is.
@@ -398,19 +399,33 @@ estimate stays on the high side.
 
 ### The TypeSafe key
 
-`start` and `measure` look for the key in this order:
-
-1. `TYPESAFE_API_KEY` in the environment.
-2. The macOS keychain, service `sessionkit` (or `jev-start`, the name before the rename).
-3. 1Password (`op://Calq/TypeSafe API/credential`), once. The key then goes into the keychain,
-   so 1Password does not ask again.
-
-If TypeSafe refuses the stored key, sessionkit reads it again from 1Password. To remove the
-stored copy:
+All Jev commands use the same TypeSafe key. On macOS, configure it explicitly:
 
 ```sh
-security delete-generic-password -s sessionkit
+sessionkit auth login     # hidden prompt; stores your key in the macOS Keychain
+sessionkit auth status    # shows the source, never the key; no API request
+sessionkit auth logout    # removes stored keys, including the legacy jev-start entry
 ```
+
+`login` stores the key without validating it with TypeSafe or making a paid request.
+For automation, `sessionkit auth login --stdin` reads the key from standard input; do not
+pass secrets as command arguments. On other platforms, use `TYPESAFE_API_KEY`.
+
+The lookup order is:
+
+1. `TYPESAFE_API_KEY` in the environment (not automatically persisted).
+2. The macOS Keychain, service `sessionkit`, account `TYPESAFE_API_KEY` (or legacy `jev-start`).
+3. Optional 1Password CLI fallback, **only** if `SESSIONKIT_OP_REFERENCE` is set:
+
+   ```sh
+   export SESSIONKIT_OP_REFERENCE="op://your-vault/your-item/credential"
+   ```
+
+There is no default vault or item. On macOS, a key read from 1Password is cached in Keychain.
+Hooks never invoke 1Password. If the shared API client receives a 401 for a Keychain key,
+its refresh uses 1Password only when explicitly configured; otherwise it asks you to run
+`sessionkit auth login` again. `grep` reports authentication failure without automatic refresh.
+`logout` does not unset environment variables or delete items from 1Password.
 
 ### What leaves your machine
 
@@ -636,7 +651,8 @@ and shared terms scored at chance.
 
 | Variable | Meaning |
 | --- | --- |
-| `TYPESAFE_API_KEY` | The TypeSafe key, before the keychain and 1Password. |
+| `TYPESAFE_API_KEY` | Your TypeSafe key for Jev; overrides Keychain and optional 1Password. |
+| `SESSIONKIT_OP_REFERENCE` | Optional 1Password secret reference (`op://vault/item/field`); no default. |
 | `SESSIONKIT_AGENT` | The default agent for `start`. |
 | `SESSIONKIT_CONFIRM_ABOVE` | Ask before spending more than this many dollars (default 0.05). |
 | `SESSIONKIT_MODEL` | The Jev model (default `jev-latest`). |

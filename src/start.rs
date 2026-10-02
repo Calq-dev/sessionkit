@@ -10,12 +10,14 @@
 // Everything kept stays verbatim. Jev selects; it never writes.
 //
 // The TypeSafe key comes from TYPESAFE_API_KEY, else from the macOS keychain, else once from
-// 1Password, after which the keychain holds it.
+// explicitly configured 1Password fallback. See sessionkit auth --help.
 //
 // Names from before the rename to sessionkit still work: the JEV_START_* variables and the
 // key stored in the keychain under "jev-start".
 
 use crate::Result;
+use crate::auth::{key, refresh_key, can_refresh, KeySource};
+pub use crate::auth::{typesafe_key, key_at_hand};
 use crate::js::{self, clip, clip_middle, len, num};
 use crate::next::{run_handoff, take_handoff};
 use crate::usage::{home, projects_dir};
@@ -30,10 +32,6 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 const API: &str = "https://api.typesafe.ai/v1/systemone";
-const OP_REFERENCE: &str = "op://Calq/TypeSafe API/credential";
-const KEYCHAIN_SERVICE: &str = "sessionkit";
-const OLD_KEYCHAIN_SERVICE: &str = "jev-start";
-const KEYCHAIN_ACCOUNT: &str = "TYPESAFE_API_KEY";
 const PICK_SIZE: usize = 20;
 const AGENTS: [&str; 3] = ["claude", "codex", "jcode"];
 const JCODE_WAIT_MS: u64 = 15000;
@@ -197,84 +195,6 @@ fn parse_arguments(argv: &[String]) -> Options {
 
 // ---------------------------------------------------------------- TypeSafe
 
-#[derive(Clone, Copy, PartialEq)]
-enum KeySource {
-    Environment,
-    Keychain,
-    OnePassword,
-}
-
-static KEY: Mutex<Option<(String, KeySource)>> = Mutex::new(None);
-
-fn read_keychain(service: &str) -> String {
-    Command::new("security").args(["find-generic-password", "-s", service, "-a", KEYCHAIN_ACCOUNT, "-w"])
-        .stdin(Stdio::null()).stderr(Stdio::null()).output().ok().filter(|output| output.status.success())
-        .map(|output| js::trim(&String::from_utf8_lossy(&output.stdout)).to_string()).unwrap_or_default()
-}
-
-/// Store the key through stdin, so it never shows in the process list.
-fn write_keychain(value: &str) {
-    let stored = Command::new("security").arg("-i").stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()
-        .and_then(|mut child| {
-            let mut stdin = child.stdin.take().expect("piped stdin");
-            writeln!(stdin, "add-generic-password -U -s {KEYCHAIN_SERVICE} -a {KEYCHAIN_ACCOUNT} -w \"{value}\"")?;
-            drop(stdin);
-            child.wait()
-        });
-    if !stored.is_ok_and(|status| status.success()) {
-        eprint!("sessionkit: could not store the key in the keychain; 1Password will ask again next time.\n");
-    }
-}
-
-fn read_one_password() -> Result<String> {
-    Command::new("op").args(["read", OP_REFERENCE]).stderr(Stdio::inherit()).output().ok()
-        .filter(|output| output.status.success())
-        .map(|output| js::trim(&String::from_utf8_lossy(&output.stdout)).to_string())
-        .ok_or_else(|| format!("No TypeSafe key. Export TYPESAFE_API_KEY or sign in to the 1Password CLI ({OP_REFERENCE})."))
-}
-
-/// Read the key from 1Password and keep it in the keychain for the next run.
-fn refresh_key() -> Result<String> {
-    let key = read_one_password()?;
-    write_keychain(&key);
-    *KEY.lock().unwrap() = Some((key.clone(), KeySource::OnePassword));
-    Ok(key)
-}
-
-/// The key: the environment, else the keychain, else 1Password once.
-fn key() -> Result<(String, KeySource)> {
-    let mut stored = KEY.lock().unwrap();
-    if let Some(found) = stored.as_ref() {
-        return Ok(found.clone());
-    }
-    let from_env = std::env::var("TYPESAFE_API_KEY").map(|key| js::trim(&key).to_string()).unwrap_or_default();
-    let found = if !from_env.is_empty() {
-        (from_env, KeySource::Environment)
-    } else {
-        let keychain = Some(read_keychain(KEYCHAIN_SERVICE)).filter(|key| !key.is_empty())
-            .unwrap_or_else(|| read_keychain(OLD_KEYCHAIN_SERVICE));
-        if keychain.is_empty() {
-            drop(stored);
-            return refresh_key().map(|key| (key, KeySource::OnePassword));
-        }
-        (keychain, KeySource::Keychain)
-    };
-    *stored = Some(found.clone());
-    Ok(found)
-}
-
-/// The TypeSafe key, for other commands: the environment, else the keychain, else 1Password.
-pub fn typesafe_key() -> Result<String> {
-    key().map(|(key, _)| key)
-}
-
-/// Whether a key is at hand without asking: in the environment or the keychain. A hook must not
-/// raise a 1Password prompt, so it asks Jev only then.
-pub fn key_at_hand() -> bool {
-    KEY.lock().unwrap().is_some() || std::env::var("TYPESAFE_API_KEY").is_ok_and(|key| !js::trim(&key).is_empty())
-        || !read_keychain(KEYCHAIN_SERVICE).is_empty() || !read_keychain(OLD_KEYCHAIN_SERVICE).is_empty()
-}
-
 // ---------------------------------------------------------------- estimating
 
 pub const CHARS_PER_TOKEN: f64 = 3.5; // measured 3.76 on a real run; lower, so the estimate stays an upper bound
@@ -384,7 +304,10 @@ pub fn post(body: &Value) -> Result<Value> {
         if (200..300).contains(&status) {
             return js::parse(&reply).ok_or_else(|| format!("TypeSafe {status}: not JSON: {}", js::head(&reply, 200)));
         }
-        if status == 401 && source == KeySource::Keychain {
+        if status == 401 && source == KeySource::Keychain && !can_refresh() {
+            return Err("The stored TypeSafe key was refused. Run sessionkit auth login to replace it, or set TYPESAFE_API_KEY.".into());
+        }
+        if status == 401 && source == KeySource::Keychain && can_refresh() {
             eprint!("sessionkit: the stored key was refused; reading it again from 1Password.\n");
             refresh_key()?;
             attempt += 1;
