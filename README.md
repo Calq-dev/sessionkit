@@ -144,17 +144,18 @@ apart.
   ```text
   The prompt cache of this session has expired. This message writes 352K tokens to the cache
   again: about $2.82, and every later message re-reads them ($0.070 each). …
-  ❯ Fresh session
+  ❯ Compact and continue
     Continue here ($2.82)
   ```
 
-  **Fresh session** closes this session and continues your message in a fresh one:
-  `sessionkit start --session <this session> "your message"`. When Jev finds the message clearly
-  new work rather than a continuation (the route question of `start`, 0.7 or more for a new
-  topic), the question says so, and the fresh session starts from the earlier sessions that fit
-  the message instead: `sessionkit start "your message"`. **Continue here** sends it. Where
-  nothing can open a fresh session (see below), the choice is **Continue here** or **Stop**; Stop,
-  or closing the dialog, puts your message back in the prompt box. The dialog is the engine's,
+  **Compact and continue** keeps only what matters for your message, so the cache write is
+  small. Where it can, it closes this session and continues in a fresh one:
+  `sessionkit start --session <this session> "your message"`; elsewhere (see below) it runs
+  /compact here and then sends your message, and the choice also offers **Stop**. When Jev finds
+  the message clearly new work rather than a continuation (the route question of `start`, 0.7 or
+  more for a new topic), the question says so and offers **Clear and continue** instead: it runs
+  /clear in this session and then sends your message, so nothing of the old context is written
+  again. **Continue here** sends it. Stop, or closing the dialog, puts your message back in the prompt box. The dialog is the engine's,
   so asking costs no model call. It comes from the plugin that `setup` installs, a function hook
   on `prompt.submit`, which needs `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`. Without it, the settings
   hook (`hook prompt`) acts alone: where it can it closes the session and continues in a fresh
@@ -166,11 +167,27 @@ apart.
   sessions running in this folder, with whether they are idle and warm. Facts only, no advice;
   about 50 tokens a message.
 
+- **Cost awareness (experimental, plugin option *Cost awareness*, off by default).** What tokens
+  cost, at the moments the agent can act on it, in as few tokens as possible:
+  - once per session, with the first message, and once per subagent, at the end of its prompt,
+    why it matters (about 45 tokens): the budget per period is limited, and every call costs
+    money, energy and water; work efficiently, not sparingly, quality first. Energy and water
+    are named, not quantified: there are no published figures per token.
+  - the line on what calls cost comes only when the context has doubled since the last one,
+    instead of with every message;
+  - a subagent hears its own cost each time its context doubles (from 50K), which nothing else
+    tells it: `sessionkit: your context is 120K tokens; each of your calls reads all of it, about $0.04.`
+  - when a subagent ends, the main session hears what it took: `sessionkit: the subagent "Read
+    three files" ended: 3 model calls, 219K tokens, about $0.32; its context peaked at 121K.`
+  Where the status line has learned what a call takes from your 5-hour limit, the share of the
+  limit stands beside the dollars. A line that would reach a subagent after its last request is
+  lost: it has no next request to read it in.
+
 - **When a warm session has grown large** (375K tokens by default; `SESSIONKIT_COMPACT_ABOVE`),
   the dialog asks whether to compact first: every message re-reads the whole context, and it
   shows the cost per call now and after /compact. A simulation over earlier sessions found that
   compacting at 300K saves about half of the cache reads, more than acting on a cold cache alone.
-  **Compact first** runs /compact and then sends your message; **Always at 375K** runs Claude
+  **Compact and continue** runs /compact and then sends your message; **Always at 375K** runs Claude
   Code's own `/autocompact 375000` as well, so it compacts by itself from then on, also in auto
   mode, where no new message comes in to ask at. It asks once per size, and again only when the
   context has grown by half; not at all once you set `autoCompactWindow` yourself.
@@ -323,6 +340,82 @@ everything out again.
 Set the limits with `SESSIONKIT_WARN_RESUME_ABOVE` (default 1) and `SESSIONKIT_BLOCK_COLD_ABOVE`
 (default 2). Set the second very high to only warn in the status line.
 
+## The architect
+
+Coding agents solve the task in front of them well. Architecture degrades through many local
+decisions that each look reasonable: an import across a boundary, a second copy of a concept, a
+repository called from the wrong module. The next agent copies what it finds, so each of them
+becomes precedent. sessionkit gives a repository an architect that stays out of the way until a
+change touches the architecture.
+
+- **Its memory** is `ARCHITECTURE.md` at the repository root: the system's shape, who owns what,
+  the dependency rules, known debt with a policy per item, deliberate exceptions and open
+  questions. Each statement carries its standing: `[confirmed]` by a person, `[observed]` in the
+  code, or `[inferred 0.6]`. Decisions go in `docs/adr/`, one short file each. The memory
+  describes the system as it is now; the architect rewrites it instead of appending to it.
+- **The offer.** In a git repository without an architect, sessionkit asks once per session,
+  after the first answer: *Onboard now*, *Not now* (asked again next session) or *Never for
+  this project*, which is kept in `~/.config/sessionkit/architect.json`; delete the repository's
+  line there to be asked again. The plugin option *Architect* set to off stops the question too.
+- **Onboarding** sets the baseline: `/sessionkit:architecture onboard` in Claude Code. The
+  architect surveys the repository, writes a draft and asks only about the assumptions whose
+  wrong guess would mislead many later reviews ("Billing appears to own invoices. Correct?");
+  an assumption that stays inside one module keeps its standing. Before you see them, Jev reads
+  the code each recommended answer cites (`sessionkit architect rank`): questions where the code
+  contradicts the draft come first, then what only intent can settle, and last what the code
+  already shows. Your answers turn
+  inferences into confirmed statements, and the current commit becomes the baseline. Debt found
+  here is known debt: it gets no warnings until a change widens it.
+- **While you work**, each plan the agent presents and each Edit or Write it makes goes to Jev,
+  after it is done and without waiting. Jev sees the change and the memory side by side, so
+  "checkout imports billing's repository" is judged against your rules, your debt and your
+  exceptions. In the same request Jev holds the change against each decision record in
+  `docs/adr/` on its own: does it follow it, go against it, or not touch it? A change that goes
+  against a record wakes the architect with that record's full text. Ordinary work ends there,
+  at about $0.0005 per change plus a few hundredths of a cent per thousand words of decision
+  records. A change Jev finds
+  architectural wakes the architect in the background: a Sonnet subagent with the change, the
+  memory and the code, but not the coding agent's reasoning, so its view is its own. Its answer
+  reaches the agent as one short message:
+
+  ```text
+  sessionkit architect (DRIFT, on src/checkout/mod.rs): Checkout now calls
+  billing::persistence::InvoiceRepository::insert directly. This breaks "Checkout depends on
+  billing only through BillingGateway" [confirmed] and bypasses ADR-0002.
+  Restore the gateway call; if checkout needs more, add it to the gateway.
+  ```
+
+  No concern means no message. When the architect finds a decision or drift, Claude Code's own
+  dialog asks you: **Follow the advice**, **Take it as a decision** or **Discuss first**. A
+  decision you take is written into the memory by the architect when the turn ends.
+- **An audit** compares the repository with the baseline: `/sessionkit:architecture audit`
+  reports what weakened, which dependencies and responsibilities moved, which statements in the
+  memory are no longer true, and which debt grew or shrank. It proposes memory edits; you choose
+  which to apply and whether the audit becomes the new baseline.
+
+What it costs: one Jev question per change in an onboarded repository, nothing elsewhere. A
+review took 6 to 8 seconds and two model turns on the test repository; at most one runs at a
+time, and changes that arrive meanwhile go into the next one together. Every check is logged in
+`~/.cache/sessionkit/architect-checks.jsonl` with Jev's reading, woken or not.
+
+Set it in `/config` under *Architect*: **advise** (the default), **shadow** (only the log; nothing
+wakes) or **off**. `SESSIONKIT_ARCHITECT_WAKE` sets the line (default 0.6).
+`SESSIONKIT_ARCHITECT_CLASSIFIER` names a program that answers instead of Jev: it gets
+`{change, architecture, categories}` as JSON on stdin and prints `{"probabilities": {...}}`.
+
+How well Jev separates, on twelve cases against a test memory (`python3
+eval/architect/classify.py`): the seven architectural ones scored 0.91 to 1.00, among them a
+change that widens known debt; four ordinary ones scored 0.00, among them a change inside known
+debt; a new field on a type the memory calls a deliberate twin scored 0.53, under the line.
+Twelve cases show the question works, not where the line belongs on your code; the log is there
+to measure that.
+
+Limits. The architect sees Edit, Write and plans, not files changed by a shell command (`cargo
+add`, a code generator); an audit finds those later. Advice that arrives after the agent's last
+request of a turn is read with your next message. A review is read-only by its tools, but it has
+Bash for `git log`; an architect run from the skill may write only `ARCHITECTURE.md` and
+`docs/adr/`. Without a TypeSafe key at hand, nothing is checked.
+
 ## sessionkit start
 
 ```sh
@@ -456,7 +549,9 @@ its refresh uses 1Password only when explicitly configured; otherwise it asks yo
 ### What leaves your machine
 
 `usage` sends nothing. `start` and `measure` send parts of your transcripts to TypeSafe:
-session cards, outlines and exchanges. The kept exchanges also go into the context file and
+session cards, outlines and exchanges. In a repository onboarded for the architect, every plan
+and every diff the agent writes goes to TypeSafe together with `ARCHITECTURE.md`, and onboarding
+sends the code its calibration questions cite. The kept exchanges also go into the context file and
 the new session. sessionkit does not redact anything, so a secret that is in a transcript can
 end up in all of these places.
 
@@ -701,5 +796,7 @@ and shared terms scored at chance.
 | `SESSIONKIT_MODEL` | The Jev model (default `jev-latest`). |
 | `SESSIONKIT_WARN_RESUME_ABOVE` | Warn on a resume whose cache write costs more than this (default 1). |
 | `SESSIONKIT_BLOCK_COLD_ABOVE` | Stop a message to a cold session once above this cost (default 2). |
+| `SESSIONKIT_ARCHITECT_WAKE` | Wake the architect at this relevance or above (default 0.6). |
+| `SESSIONKIT_ARCHITECT_CLASSIFIER` | A program that classifies changes instead of Jev; `jev` or empty for Jev. |
 
 The `JEV_START_*` names from before the rename still work.

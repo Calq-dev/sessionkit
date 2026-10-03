@@ -1,9 +1,20 @@
 {
   "name": "sessionkit",
   "version": "__VERSION__",
-  "description": "sessionkit in Claude Code: compaction without a summary, the cold-cache and large-context dialogs, the edit retry, and the robot output style.",
+  "description": "sessionkit in Claude Code: compaction without a summary, the cold-cache and large-context dialogs, the edit retry, the architect, and the robot output style.",
   "license": "MIT",
   "userConfig": {
+    "architect": {
+      "type": "string",
+      "title": "Architect",
+      "description": "In a repository onboarded with /sessionkit:architecture onboard: advise wakes the architect for a plan or change Jev finds architectural, and puts its advice in the agent's context; shadow only logs Jev's reading; off checks nothing.",
+      "options": [
+        "advise",
+        "shadow",
+        "off"
+      ],
+      "default": "advise"
+    },
     "readOutline": {
       "type": "boolean",
       "title": "Outline first for large files",
@@ -20,6 +31,12 @@
       "type": "boolean",
       "title": "Fold a turn when it ends",
       "description": "When a turn ends that added 20,000 characters of tool output or more, the output of each call that changed no file is cut to its first 300 characters. Everything before the turn stays in the prompt cache, and all prompts, answers and calls stay as they were. Interactive sessions only.",
+      "default": false
+    },
+    "costAwareness": {
+      "type": "boolean",
+      "title": "Cost awareness (experimental)",
+      "description": "Tells the agent what its tokens cost, at the moments it can act on it: why cost matters once per session and per subagent, the cost note with your messages only when the context has doubled (instead of with every message), a subagent's own cost each time its context doubles, and what a subagent took when it ends. Where the status line knows your 5-hour limit, the share of it stands beside the dollars.",
       "default": false
     }
   }

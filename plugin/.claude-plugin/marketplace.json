@@ -5,7 +5,7 @@
     {
       "name": "sessionkit",
       "source": "./",
-      "description": "sessionkit in Claude Code: compaction without a summary, the cold-cache and large-context dialogs, the edit retry, and the robot output style.",
+      "description": "sessionkit in Claude Code: compaction without a summary, the cold-cache and large-context dialogs, the edit retry, the architect, and the robot output style.",
       "version": "__VERSION__"
     }
   ]

@@ -4,6 +4,45 @@ All notable changes to sessionkit, called jev-start before 0.3.0. The format fol
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-10-03
+
+### Added
+
+- **The architect.** A repository onboarded with `/sessionkit:architecture onboard` gets an
+  architect: the agent type `sessionkit:architect`, with its memory in `ARCHITECTURE.md` and
+  decisions in `docs/adr/`. Onboarding surveys the repository, separates what the code shows from
+  what was meant, asks about the assumptions that would mislead many later reviews, ordered by
+  what the cited code shows (`sessionkit architect rank`, a citation check with Jev), and sets a
+  baseline commit; debt it finds becomes known debt that is not warned about again unless a
+  change widens it. Each plan and each Edit or Write then goes to Jev without waiting (`hook architect-check`): one Choice
+  over what the change does to the architecture, with known debt and deliberate exceptions as
+  bins of their own, and in the same request one Choice per decision record in `docs/adr/`:
+  follows, goes against or unrelated. A change at 0.6 or more, or one that goes against a
+  record, wakes a read-only review in the background with that record's text; its
+  advice reaches the agent as one message; a decision or drift is put to you in Claude Code's
+  dialog, and a decision you take is recorded when the turn ends. `/sessionkit:architecture
+  audit` reports the delta since the baseline. A git repository without an architect gets one
+  question per session, after the first answer: onboard now, not now, or never for this project
+  (kept in `~/.config/sessionkit/architect.json`). Plugin option *Architect*: advise (default),
+  shadow or off. On fifteen test cases Jev put all nine architectural changes at 0.90 or more and
+  all six ordinary ones at 0.46 or less, and named the decision record a change goes against in
+  12 of 13 labelled cases.
+
+- **Cost awareness (experimental).** Plugin option *Cost awareness*, off by default: why
+  tokens matter once per session and once per subagent (a limited budget per period; money,
+  energy and water), the cost note only when the context has doubled, a subagent's own cost each
+  time its context doubles, and what a subagent took when it ends (`hook awareness-start`,
+  `hook awareness-agent`). Where the status line knows the 5-hour limit, its share stands beside
+  the dollars.
+
+### Changed
+
+- **New work clears instead of opening a fresh session.** When a message to a cold session looks
+  like new work, the dialog offers **Clear and continue**: /clear in this session, then the
+  message. It no longer closes the session for a fresh one, and it works without a handoff too.
+- The fold's `turn.complete` hook matches `reason: "answer"`, so another hook of the plugin can
+  see every end of a turn.
+
 ## [0.19.0] - 2026-10-02
 
 ### Added

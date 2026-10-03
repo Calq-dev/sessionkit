@@ -1,6 +1,6 @@
 // sessionkit's choice before a message to a cold session: when the prompt cache has expired and
 // writing the context again is expensive, ask in Claude Code's own dialog whether to go on here
-// or in a fresh session with only what matters. In a warm session whose context has grown large
+// or compacted first, so the cache write holds only what matters. In a warm session whose context has grown large
 // (375K tokens by default), ask whether to compact first, since every message re-reads it all. When
 // a subagent of the session has grown that large and no auto-compact window is set, ask whether to
 // set one, since without it a subagent never compacts. The dialog is the engine's, so asking costs no
@@ -15,9 +15,9 @@ import { waiting } from "./waiting.js";
 const SESSIONKIT = "__SESSIONKIT__";
 const TIMEOUT_MS = 10_000;
 
-const FRESH = "Fresh session";
 const STOP = "Stop";
-const COMPACT = "Compact first";
+const COMPACT = "Compact and continue";
+const CLEAR = "Clear and continue";
 const CONTINUE = "Continue";
 
 async function sessionkit($, args, input) {
@@ -40,7 +40,11 @@ async function large($, event, next, check) {
     choice = CONTINUE; // dismissed
   }
   if (choice === CONTINUE) return next(event);
-  const commands = choice === ALWAYS ? [["autocompact", String(check.window)], ["compact", ""]] : [["compact", ""]];
+  return compactFirst($, event, choice === ALWAYS ? [["autocompact", String(check.window)], ["compact", ""]] : [["compact", ""]]);
+}
+
+/** Run the commands just after this hook, which holds the turn; compact.js sends the message after /compact. */
+function compactFirst($, event, commands) {
   waiting.text = event.text;
   $.clock.after(0, async () => {
     try {
@@ -53,6 +57,21 @@ async function large($, event, next, check) {
     }
   });
   return { drop: "sessionkit: compacting first; your message goes out once that is done." };
+}
+
+/** /clear just after this hook, which holds the turn, then send the message to the emptied session. */
+function clearFirst($, event) {
+  $.clock.after(0, async () => {
+    try {
+      await $.command.run({ command: "clear", args: "" });
+      await $.prompt.submit({ text: event.text });
+    } catch (error) {
+      $.ui.log(`sessionkit: /clear did not start (${error instanceof Error ? error.message : String(error)})`);
+      await $.prompt.fill({ text: event.text });
+      $.ui.toast("sessionkit: could not start /clear; your message is back in the prompt box.");
+    }
+  });
+  return { drop: "sessionkit: clearing this session first; your message goes out once that is done." };
 }
 
 /**
@@ -99,20 +118,25 @@ export const register = (on) => {
     if (check.subagent) return subagent($, event, next, check);
     if (!check.cold) return next(event);
 
+    // Compact and continue means one thing to the person; how differs: with a handoff, a fresh
+    // session continues this one with only what matters; without one, /compact compacts it here.
+    // New work clears this session (/clear) in this terminal and sends the message there.
     const here = `Continue here (${check.cost})`;
+    const first = check.route === "search" ? CLEAR : COMPACT;
     let choice;
     try {
-      choice = await $.ui.ask(check.question, { options: check.fresh ? [FRESH, here] : [here, STOP], header: "Cold cache" });
+      choice = await $.ui.ask(check.question, { options: check.fresh || first === CLEAR ? [first, here] : [first, here, STOP], header: "Cold cache" });
     } catch {
       choice = STOP; // dismissed
     }
-    if (choice === here) {
+    if (choice === CLEAR) return clearFirst($, event);
+    if (choice === here || (choice === COMPACT && !check.fresh)) {
       // Without the ack the settings hook stops the message once; sending it again goes through.
       await sessionkit($, ["cold-choice", "continue"], input).catch(() => undefined);
-      return next(event);
+      return choice === here ? next(event) : compactFirst($, event, [["compact", ""]]);
     }
     try {
-      if (choice === FRESH) {
+      if (choice === COMPACT) {
         const answer = await sessionkit($, ["cold-choice", "fresh"], { ...input, route: check.route });
         if (answer.ok) return { drop: "sessionkit: closing this session; your message continues in a fresh one." };
       }

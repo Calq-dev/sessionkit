@@ -14,8 +14,10 @@
 //
 // A prompt without a command means start.
 
+mod architect;
 mod ask;
 mod auth;
+mod awareness;
 mod cache;
 mod claude;
 mod compact;
@@ -47,6 +49,7 @@ Usage:
   sessionkit setup [--remove]           install the status line and hooks in Claude Code
   sessionkit grep \"question\" [root]     find code by asking what it does (Jev, about $0.0005 a file)
   sessionkit ask <file> \"question\"      ask about a file instead of reading it (Jev, about $0.0005 a file)
+  sessionkit architect rank [root]      order onboarding's calibration questions by what the code shows (Jev)
   sessionkit compact <session>          what a compaction without summary would keep (Jev)
   sessionkit trim --measure [n]         measure cutting large tool results to the task (Jev)
   sessionkit skills [--draft n]         find work you repeat, where a skill would help (Jev)
@@ -82,6 +85,7 @@ fn main() {
         "hook" => claude::hook_main(rest),
         "setup" => setup::setup_main(rest),
         "auth" => auth::auth_main(rest),
+        "architect" => architect::architect_main(rest),
         "grep" => grep::grep_main(rest),
         "ask" => ask::ask_main(rest),
         "compact" => compact::compact_main(rest),

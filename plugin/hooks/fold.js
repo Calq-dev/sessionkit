@@ -44,7 +44,7 @@ const reason = (error) => (error instanceof Error ? error.message : String(error
 export const register = (on, options) => {
   if (!options?.foldTurns) return;
 
-  on("turn.complete", async ($, event, next) => {
+  on("turn.complete", { reason: "answer" }, async ($, event, next) => {
     const result = await next(event);
     if (event.agentId || event.reason !== "answer") return result;
     try {
