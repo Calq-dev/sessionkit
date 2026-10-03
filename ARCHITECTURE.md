@@ -56,7 +56,7 @@ Plugin (`plugin/`): `hooks/index.js` registers the function hooks (`compact`, `f
 
 ## Known debt
 - AD-001: Module cycles (to be fixed soon). `claude` <-> `architect`, `claude` <-> `peers`, `start` <-> `next` (`src/claude.rs:20-26`, `src/architect.rs:15`, `src/peers.rs`, `src/next.rs`). Pre-existing at onboarding. Policy: warn on every change that touches these modules or edges; fix is planned. [confirmed]
-- AD-002: `claude.rs` (922 lines) is a hub importing ten modules and mixing status line, settings hooks and the architect check; to be split soon. [confirmed] `start.rs` (1594) and `compact.rs` (1221) are similarly large [observed]. Pre-existing at onboarding. Policy: warn when a change adds a responsibility to `claude.rs`; no warning on unrelated changes to the others.
+- AD-002: `claude.rs` (922 lines) is a hub importing ten modules and mixing status line, settings hooks and the architect check; to be split soon. [confirmed] `start.rs` (1594) is a second hub and is to be split: its session model and reading (`Session`, `parse_session`, `read_session`, `session_files`, `session_card`, `src/start.rs:261-694`) are imported by `claude`, `peers`, `skills`, `trim`, `compact` and `measure`, so a module of their own gives them a dependency that is not the launch code. The `start` <-> `next` cycle is between launch code (`src/start.rs:22`, `src/next.rs:121`) and this split does not break it. [confirmed] `compact.rs` (1221) stays whole [observed]: its pipeline (messages, state, ask, plan, `src/compact.rs:106-636`) shares private types, and `trim` depends on it only through a small public surface (`src/trim.rs:15`); only its measuring section (`src/compact.rs:858-1082`) is a candidate, when it grows. Pre-existing at onboarding. Policy: warn when a change adds a responsibility to `claude.rs` or `start.rs`; no warning on unrelated changes.
 - AD-003: `usage::home` is a misplaced general helper [confirmed] that `claude`, `grep` and others reach through `usage` (`src/grep/mod.rs:109`). Pre-existing at onboarding. Policy: no warning unless a new module copies the pattern.
 
 ## Tensions
@@ -70,4 +70,4 @@ Plugin (`plugin/`): `hooks/index.js` registers the function hooks (`compact`, `f
 - Settings hook and plugin hook each decide cold/large sessions (ADR 0002). [confirmed by ADR]
 
 ## Open questions
-- Should `start.rs` and `compact.rs` be split too? Only `claude.rs` is confirmed.
+None at present.
