@@ -49,7 +49,7 @@ function world(on, check, answer) {
   return seen;
 }
 
-const LARGE = { cold: false, large: true, at: "375K", window: 375000, question: "This session has 463K tokens of context. Compact first?" };
+const LARGE = { cold: false, large: true, at: "375K", window: 375000, question: "This session has 463K tokens of context. Compact and continue?" };
 
 const typed = (text) => ({ text, wait: false, origin: { kind: "composer" } });
 
@@ -63,31 +63,50 @@ test("a warm session goes through without a question", async ($, on) => {
 test("continue here acks and lets the message through", async ($, on) => {
   const seen = world(on, COLD, "Continue here");
   const result = await $.prompt.submit(typed("hello"));
-  expect(seen.asked).toEqual([["Fresh session", "Continue here ($2.82)"]]);
+  expect(seen.asked).toEqual([["Compact and continue", "Continue here ($2.82)"]]);
   expect(seen.runs).toEqual(["cold-check", "cold-choice continue"]);
   expect(result).toEqual({ text: "hello" });
 });
 
-test("a fresh session hands the message over and keeps it out of this one", async ($, on) => {
-  const seen = world(on, COLD, "Fresh session");
+test("compact and continue hands the message over and keeps it out of this one", async ($, on) => {
+  const seen = world(on, COLD, "Compact and continue");
   const result = await $.prompt.submit(typed("hello"));
   expect(seen.runs).toEqual(["cold-check", "cold-choice fresh"]);
   expect(seen.entered).toEqual([]);
   expect(result.drop).toContain("fresh one");
 });
 
-test("the route cold-check chose goes with the fresh choice", async ($, on) => {
-  const seen = world(on, { ...COLD, route: "search" }, "Fresh session");
-  await $.prompt.submit(typed("something new"));
-  expect(seen.inputs[1]).toEqual({ session_id: "session-1", prompt: "something new", route: "search" });
+test("new work is offered clear and continue: /clear here, then the message, no fresh session", async ($, on) => {
+  const clock = mock.clock(on);
+  const seen = world(on, { ...COLD, route: "search" }, "Clear and continue");
+  const result = await $.prompt.submit(typed("something new"));
+  expect(seen.asked).toEqual([["Clear and continue", "Continue here ($2.82)"]]);
+  expect(seen.runs).toEqual(["cold-check"]);
+  expect(result.drop).toContain("clearing");
+  await clock.advance(0);
+  expect(seen.commands).toEqual(["clear"]);
+  expect(seen.entered).toContain("something new");
 });
 
 test("without a way to open a fresh session, stop puts the message back", async ($, on) => {
   const seen = world(on, { ...COLD, fresh: false }, "Stop");
   const result = await $.prompt.submit(typed("hello"));
-  expect(seen.asked).toEqual([["Continue here ($2.82)", "Stop"]]);
+  expect(seen.asked).toEqual([["Compact and continue", "Continue here ($2.82)", "Stop"]]);
   expect(seen.filled).toEqual(["hello"]);
   expect(result).toEqual({ drop: COLD.stop });
+});
+
+test("without a handoff, compact and continue acks, runs /compact, and sends the message after it", async ($, on) => {
+  const clock = mock.clock(on);
+  const seen = world(on, { ...COLD, fresh: false }, "Compact and continue");
+  const result = await $.prompt.submit(typed("go on"));
+  expect(seen.runs).toEqual(["cold-check", "cold-choice continue"]);
+  expect(result.drop).toContain("compacting first");
+  await clock.settle();
+  expect(seen.commands).toEqual(["compact"]);
+  await $.session.compact({ trigger: "manual", messages: [{ role: "user", text: "hello", toolUses: [] }] });
+  await clock.settle();
+  expect(seen.entered).toContain("go on");
 });
 
 test("a dismissed dialog puts the message back", async ($, on) => {
@@ -104,11 +123,11 @@ test("a message from a peer is not asked about", async ($, on) => {
   expect(seen.runs).toEqual([]);
 });
 
-test("compact first: /compact runs after the hook, and the message goes out after it", async ($, on) => {
+test("a large session: compact and continue runs /compact after the hook, and the message goes out after it", async ($, on) => {
   const clock = mock.clock(on);
-  const seen = world(on, LARGE, "Compact first");
+  const seen = world(on, LARGE, "Compact and continue");
   const result = await $.prompt.submit(typed("go on"));
-  expect(seen.asked).toEqual([["Compact first", "Continue", "Always at 375K"]]);
+  expect(seen.asked).toEqual([["Compact and continue", "Continue", "Always at 375K"]]);
   expect(result.drop).toContain("compacting first");
   await clock.settle();
   expect(seen.commands).toEqual(["compact"]);

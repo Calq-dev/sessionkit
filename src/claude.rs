@@ -14,6 +14,7 @@
 // Claude's context: the prompt hook's line on what calls cost (cost_note), about 50 tokens.
 
 use crate::Result;
+use crate::awareness;
 use crate::cache::{CacheState, cache_state, read_tail};
 use crate::js::{self, fixed, num};
 use crate::peers;
@@ -39,11 +40,11 @@ const RED: &str = "\x1b[31m";
 const DIM: &str = "\x1b[2m";
 const RESET: &str = "\x1b[0m";
 
-fn setting(name: &str, fallback: f64) -> f64 {
+pub(crate) fn setting(name: &str, fallback: f64) -> f64 {
     js::number_or(std::env::var(format!("SESSIONKIT_{name}")).ok().as_deref(), fallback)
 }
 
-fn cache_dir() -> PathBuf {
+pub(crate) fn cache_dir() -> PathBuf {
     home().join(".cache").join("sessionkit")
 }
 
@@ -75,7 +76,7 @@ pub fn minutes(ms: f64) -> String {
     }
 }
 
-fn session_id(input: &Value) -> String {
+pub(crate) fn session_id(input: &Value) -> String {
     if let Some(id) = input.get("session_id").filter(|v| !v.is_null()) {
         return id.as_str().map_or_else(|| id.to_string(), str::to_string);
     }
@@ -130,7 +131,7 @@ fn state_for(input: &Value) -> Option<CacheState> {
 
 // ---------------------------------------------------------------- subscription limits
 
-fn read_json(path: &Path) -> Option<Value> {
+pub(crate) fn read_json(path: &Path) -> Option<Value> {
     js::parse(&std::fs::read_to_string(path).ok()?)
 }
 
@@ -185,7 +186,7 @@ fn learn_limit(id: &str, five_hour: Option<&Value>, state: &CacheState) -> std::
 }
 
 /// The estimated share of the 5-hour limit one warm call takes at this context, or None.
-fn limit_per_call(context: f64) -> Option<f64> {
+pub(crate) fn limit_per_call(context: f64) -> Option<f64> {
     let samples = read_samples(&cache_dir().join("limit-samples.jsonl"));
     let warm: Vec<&Value> = samples.iter().filter(|sample| !js::truthy(sample.get("cold"))).collect();
     let warm = &warm[warm.len().saturating_sub(LIMIT_SAMPLE_WINDOW)..];
@@ -200,7 +201,7 @@ fn limit_per_call(context: f64) -> Option<f64> {
     Some((warm.iter().fold(0.0, |sum, sample| sum + field(sample, "delta")) / total_context) * context)
 }
 
-fn clock(epoch_seconds: f64) -> String {
+pub(crate) fn clock(epoch_seconds: f64) -> String {
     use chrono::TimeZone;
     chrono::Local.timestamp_millis_opt((epoch_seconds * 1000.0) as i64).single()
         .map(|time| time.format("%H:%M").to_string()).unwrap_or_default()
@@ -299,8 +300,9 @@ fn session_start(input: &Value) -> Option<Value> {
     let idle = seconds.map_or(String::new(), |s| format!(" after {}", minutes(s * 1000.0)));
     Some(json!({
         "systemMessage": format!("sessionkit: the prompt cache has expired{idle}. Your first message writes \
-            {} tokens to the cache again: about {}, and every later message re-reads them. Cheaper: exit and run \
-            sessionkit start --session {} \"your prompt\", which starts fresh with only what matters.",
+            {} tokens to the cache again: about {}, and every later message re-reads them. Cheaper: /compact first, \
+            which keeps all text and drops tool output that is no longer needed; or exit and run \
+            sessionkit start --session {} \"your prompt\", which continues with only what matters.",
             tokens(js::num_of(input, "context_tokens")), usd(cost), js::head(&session_id(input), 8)),
     }))
 }
@@ -353,7 +355,7 @@ fn plain_status(status: &str) -> &'static str {
 /// One line for the agent's context with each message: what one of its own calls costs now, and
 /// what the other sessions running in this folder cost per call. Only facts, no advice. Only
 /// above COST_NOTE_ABOVE tokens of context.
-fn cost_note(input: &Value, state: &CacheState) -> Option<String> {
+fn cost_note(input: &Value, state: &CacheState, limit: &str) -> Option<String> {
     let per_call = state.per_call?;
     if state.context < setting("COST_NOTE_ABOVE", 50_000.0) {
         return None;
@@ -367,14 +369,22 @@ fn cost_note(input: &Value, state: &CacheState) -> Option<String> {
             Some(format!("{} {} {} ({} a call, {warm})", plain_name(&p.name), plain_status(&p.status), tokens(cache.context), usd(cache.per_call?)))
         })
         .take(COST_NOTE_PEERS).collect();
-    Some(format!("sessionkit: this session has {} tokens of context; each of your calls reads all of it, about {}.{}",
+    Some(format!("sessionkit: this session has {} tokens of context; each of your calls reads all of it, about {}{limit}.{}",
         tokens(state.context), usd(per_call),
         if others.is_empty() { String::new() } else { format!(" Other sessions here: {}.", others.join("; ")) }))
 }
 
 fn prompt(input: &Value) -> Result<Option<(Value, Option<i64>)>> {
     let Some(state) = cold_state(input) else {
-        let note = transcript_state(input).and_then(|state| cost_note(input, &state));
+        let id = session_id(input);
+        let state = transcript_state(input);
+        // With cost awareness on, the note comes with the first message and then at each doubling.
+        let note = if awareness::on(&id) {
+            let context = state.as_ref().map_or(0.0, |state| state.context);
+            awareness::main_note(&id, context, state.as_ref().and_then(|state| cost_note(input, state, &awareness::limit_part(&id, state.context))))
+        } else {
+            state.and_then(|state| cost_note(input, &state, ""))
+        };
         return Ok(note.map(|text| (json!({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": text}}), None)));
     };
     let cold_call = state.cold_call.unwrap_or(f64::NAN);
@@ -494,7 +504,7 @@ fn large_check(id: &str, state: &CacheState) -> Result<Value> {
         "window": js::round(compact_above()),
         "question": format!("This session has {} tokens of context, and every message re-reads all of it: {} a call. \
             After /compact it is about {} ({} a call), so 100 more calls cost about {} instead of {}. Compacting \
-            keeps all text and drops tool output that is no longer needed. Compact first?",
+            keeps all text and drops tool output that is no longer needed. Compact and continue?",
             tokens(state.context), usd(per_call), tokens(after), usd(per_call * after / state.context),
             usd(100.0 * per_call * after / state.context), usd(100.0 * per_call)),
     }))
@@ -548,8 +558,8 @@ fn subagent_check(context: f64, above: f64) -> Value {
 }
 
 /// For the plugin's prompt.submit hook: is this session cold and expensive, and can a fresh
-/// session be opened in this terminal? The dialog's question comes from here, and the route of
-/// the fresh session: continue this one, or, for new work, start from the sessions that fit it.
+/// session be opened in this terminal? The dialog's question comes from here: a continuation is
+/// compacted and continued; new work clears this session (/clear) and starts there.
 fn cold_check(input: &Value) -> Result<Value> {
     let prompt = js::str_of(input, "prompt");
     let input = session_input(input);
@@ -574,7 +584,7 @@ fn cold_check(input: &Value) -> Result<Value> {
         Some(pid) => handoff_key(pid)?.is_some(),
         None => false,
     };
-    let search = fresh && is_new_work(js::str_of(&input, "transcript_path"), prompt);
+    let search = is_new_work(js::str_of(&input, "transcript_path"), prompt);
     let cost = usd(state.cold_call.unwrap_or(f64::NAN));
     let restart = format!("sessionkit start --session {} \"your prompt\"", js::head(&id, 8));
     Ok(json!({
@@ -585,9 +595,10 @@ fn cold_check(input: &Value) -> Result<Value> {
         "question": format!("The prompt cache of this session has expired. This message writes {} tokens to the \
             cache again: about {cost}, and every later message re-reads them ({} each). {}", tokens(state.context),
             usd(state.per_call.unwrap_or(f64::NAN)),
-            if search { "This message looks like new work: a fresh session starts from the earlier sessions that fit it. Where do you go on?" }
-            else if fresh { "A fresh session starts with only what matters for this message. Where do you go on?" }
-            else { "Go on here, or stop and start fresh yourself?" }),
+            if search { "This message looks like new work: Clear and continue empties this session (/clear) and \
+                sends it there, so the cache write is small. Where do you go on?" }
+            else { "Compact and continue keeps only what matters for this message, so the cache write is small. \
+                Where do you go on?" }),
         "stop": format!("sessionkit: your message is back in the prompt box. To start fresh, exit and run: {restart}"),
     }))
 }
@@ -785,6 +796,26 @@ pub fn hook_main(argv: &[String]) -> Result<()> {
         }
         Some("agent-route") => {
             println!("{}", js::stringify(&agent_route(&input)?));
+            return Ok(());
+        }
+        Some("architect-check") => {
+            println!("{}", js::stringify(&crate::architect::check_main(&input)?));
+            return Ok(());
+        }
+        Some("awareness-start") => {
+            println!("{}", js::stringify(&awareness::start(&input)?));
+            return Ok(());
+        }
+        Some("awareness-agent") => {
+            println!("{}", js::stringify(&awareness::agent(&input)?));
+            return Ok(());
+        }
+        Some("architect-offer") => {
+            println!("{}", js::stringify(&crate::architect::offer_main(&input)));
+            return Ok(());
+        }
+        Some("architect-decline") => {
+            println!("{}", js::stringify(&crate::architect::decline_main(&input)?));
             return Ok(());
         }
         Some("effort-route") => {

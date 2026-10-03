@@ -38,11 +38,17 @@ const SKILL: &str = include_str!("SKILL.md");
 const SKILL_NAME: &str = "sessionkit";
 const OLD_SKILL_NAME: &str = "sessionkit-grep";
 
-const PLUGIN_FILES: [(&str, &str); 14] = [
+const PLUGIN_FILES: [(&str, &str); 20] = [
     (".claude-plugin/plugin.json", include_str!("../plugin/.claude-plugin/plugin.json")),
     (".claude-plugin/marketplace.json", include_str!("../plugin/.claude-plugin/marketplace.json")),
     ("hooks/hooks.json", include_str!("../plugin/hooks/hooks.json")),
     ("hooks/agent.js", include_str!("../plugin/hooks/agent.js")),
+    ("hooks/architect.js", include_str!("../plugin/hooks/architect.js")),
+    ("hooks/awareness.js", include_str!("../plugin/hooks/awareness.js")),
+    ("agents/architect.md", include_str!("../plugin/agents/architect.md")),
+    ("skills/architecture/SKILL.md", include_str!("../plugin/skills/architecture/SKILL.md")),
+    ("skills/architecture/ONBOARD.md", include_str!("../plugin/skills/architecture/ONBOARD.md")),
+    ("skills/architecture/AUDIT.md", include_str!("../plugin/skills/architecture/AUDIT.md")),
     ("hooks/compact.js", include_str!("../plugin/hooks/compact.js")),
     ("hooks/edit.js", include_str!("../plugin/hooks/edit.js")),
     ("hooks/effort.js", include_str!("../plugin/hooks/effort.js")),
@@ -55,9 +61,9 @@ const PLUGIN_FILES: [(&str, &str); 14] = [
     ("output-styles/robot.md", include_str!("../plugin/output-styles/robot.md")),
 ];
 /// What the plugin does, one line per hook or file, for the output of setup.
-const PLUGIN_FEATURES: [&str; 10] = [
+const PLUGIN_FEATURES: [&str; 11] = [
     "/compact and auto-compaction go through sessionkit compact, without a summary",
-    "before a message to a cold session, a dialog asks: continue here, or in a fresh session",
+    "before a message to a cold session, a dialog asks: continue here, or compacted first",
     "before a message to a warm session above 375K, a dialog offers to compact first, or always at 375K",
     "an Edit refused because the file was not read is read and tried again, without the text in the context",
     "a teammate's idle notification that repeats its report gets a one-line result",
@@ -65,6 +71,7 @@ const PLUGIN_FEATURES: [&str; 10] = [
     "per subagent, in shadow: the model and effort Jev would give it, and which warm session would fit",
     "per typed prompt, in shadow: the effort level Jev finds enough, beside the one the turn ran at; applying it as an option in /config",
     "as an option in /config: when a turn ends that added much tool output, its outputs are cut and the prompt cache stays",
+    "the architect: /sessionkit:architecture onboard, then Jev wakes it for architectural plans and changes; advise, shadow or off in /config",
     "the output style sessionkit-robot, to pick with /output-style sessionkit-robot",
 ];
 
@@ -414,6 +421,25 @@ fn install_plugin(options: &Options, settings: &Value) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// Every file of the plugin folder except tests is installed: index.js imports them all.
+    #[test]
+    fn setup_installs_every_plugin_file() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("plugin");
+        let mut found = Vec::new();
+        let mut folders = vec![root.clone()];
+        while let Some(folder) = folders.pop() {
+            for entry in std::fs::read_dir(&folder).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() { folders.push(path); continue; }
+                let relative = path.strip_prefix(&root).unwrap().to_string_lossy().to_string();
+                if !relative.ends_with(".test.ts") && !relative.ends_with(".DS_Store") { found.push(relative); }
+            }
+        }
+        let listed: Vec<&str> = PLUGIN_FILES.iter().map(|(path, _)| *path).collect();
+        let missing: Vec<&String> = found.iter().filter(|f| !listed.contains(&f.as_str())).collect();
+        assert!(missing.is_empty(), "not in PLUGIN_FILES: {missing:?}");
+    }
+
     use super::*;
 
     fn setup(settings: &Value) -> Value {
