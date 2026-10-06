@@ -9,8 +9,8 @@ disable-model-invocation: true
 
 sessionkit gives the repository an architect: the agent type `sessionkit:architect`, with its own
 context and the memory in `ARCHITECTURE.md` at the repository root. Once onboarded, sessionkit's
-hooks send each plan and edit to Jev, and wake the architect only for a change that is
-architectural; its advice arrives in your context as a line starting with `sessionkit architect`.
+hooks send each plan and edit to Jev; for a change that is architectural, a note starting with
+`sessionkit architect (Jev)` arrives in your context, and you check it or start the architect.
 You orchestrate here; the architect reads, judges and writes the memory. Give it the repository
 root and the mode, never your own reasoning about the code: its value is a separate view.
 

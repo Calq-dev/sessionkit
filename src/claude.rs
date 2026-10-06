@@ -21,7 +21,7 @@ use crate::peers;
 use crate::next::{env_pid, handoff_key, leave_handoff, ps_field, terminate, transcript_of};
 use crate::auth::key_at_hand;
 use crate::jev::ask_choice;
-use crate::start::{ROUTE_CONTINUE, Scored, read_session, route_to_session};
+use crate::start::{ROUTE_CONTINUE, Session, read_session};
 use crate::pricing::{Rate, Ttl};
 use crate::transcript::Entry;
 use crate::usage::home;
@@ -400,7 +400,7 @@ fn prompt(input: &Value) -> Result<Option<(Value, Option<i64>)>> {
         _ => None,
     };
     if let Some(key) = key {
-        leave_handoff(&key, &id, text, false);
+        leave_handoff(&key, &id, text);
         return Ok(Some((json!({
             "decision": "block",
             "reason": format!("sessionkit: the prompt cache of this session has expired. This message would write \
@@ -439,9 +439,12 @@ fn session_input(input: &Value) -> Value {
     json!({"session_id": id, "transcript_path": path})
 }
 
-/// Whether a message to a cold session is new work rather than a continuation: the route question
-/// of sessionkit start, with this session as the one candidate. Only a clear new topic counts; when
-/// Jev cannot be asked, the fresh session continues this one, as before.
+const NEW_WORK: &str = "new_work";
+
+/// Whether a message to a cold session is new work rather than a continuation. The message is typed
+/// into this session, so it is judged beside the session's last requests and the answer it may
+/// reply to: a "yes" or "commit it" continues. Only a clear new topic counts; when Jev cannot be
+/// asked, the session is compacted, as before.
 fn is_new_work(transcript: &str, prompt: &str) -> bool {
     if js::trim(prompt).is_empty() || transcript.is_empty() || !key_at_hand() {
         return false;
@@ -450,8 +453,33 @@ fn is_new_work(transcript: &str, prompt: &str) -> bool {
     if session.exchanges.is_empty() {
         return false;
     }
-    let candidate = Scored { session, relevance: 1.0, continues: None };
-    route_to_session(prompt, &[candidate], false).is_ok_and(|route| route.session.is_none() && route.probability >= ROUTE_CONTINUE)
+    let before = read_tail(Path::new(transcript), LAST_ANSWER_TAIL).map(|text| last_answer(&text)).unwrap_or_default();
+    new_work_probability(&session, &before, prompt).is_some_and(|p| p >= ROUTE_CONTINUE)
+}
+
+/// The probability Jev gives that `prompt`, typed into this session, starts new work.
+fn new_work_probability(session: &Session, before: &str, prompt: &str) -> Option<f64> {
+    let recent = &session.exchanges[session.exchanges.len().saturating_sub(3)..];
+    let state = json!({
+        "session": {
+            "title": session.title,
+            "last_requests": recent.iter().map(|e| js::clip(&e.prompt, 250)).collect::<Vec<_>>(),
+            "last_answer": js::clip_middle(before, 1500),
+        },
+        "message": js::clip(prompt, 2000),
+    });
+    let question = json!({
+        "instructions": "After a pause, the person typed `message` into the Claude Code session `session`. Does it \
+            go on with the work of that session, or start new work that needs nothing from it?",
+        "criteria": {
+            "continues": "The message goes on with, replies to or asks about the work of the session, also when it \
+                is short, such as a yes, a go-ahead, a correction or a question about what was done.",
+            NEW_WORK: "The message starts a task that needs nothing from the session: another topic, another \
+                project or an unrelated question.",
+        },
+    });
+    let (answer, _) = ask_choice(&state, question).ok()?;
+    answer?.get("probabilities")?.get(NEW_WORK)?.as_f64()
 }
 
 /// Measured: 44 compactions left a median 5.4% of the context; rounded up, since a session keeps
@@ -596,7 +624,8 @@ fn cold_check(input: &Value) -> Result<Value> {
             cache again: about {cost}, and every later message re-reads them ({} each). {}", tokens(state.context),
             usd(state.per_call.unwrap_or(f64::NAN)),
             if search { "This message looks like new work: Clear and continue empties this session (/clear) and \
-                sends it there, so the cache write is small. Where do you go on?" }
+                sends it there; Compact and continue keeps only what matters for this message. Either way the \
+                cache write is small. Where do you go on?" }
             else { "Compact and continue keeps only what matters for this message, so the cache write is small. \
                 Where do you go on?" }),
         "stop": format!("sessionkit: your message is back in the prompt box. To start fresh, exit and run: {restart}"),
@@ -623,7 +652,7 @@ fn cold_choice(choice: Option<&str>, input: &Value) -> Result<(Value, Option<i64
             let Some((key, pid)) = key else {
                 return Ok((json!({"ok": false, "reason": "nothing in this terminal can open the next session"}), None));
             };
-            leave_handoff(&key, &id, js::str_of(input, "prompt"), js::str_of(input, "route") == "search");
+            leave_handoff(&key, &id, js::str_of(input, "prompt"));
             Ok((json!({"ok": true}), Some(pid)))
         }
         _ => Err("hook cold-choice takes continue or fresh.".into()),

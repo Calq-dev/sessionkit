@@ -4,6 +4,29 @@ All notable changes to sessionkit, called jev-start before 0.3.0. The format fol
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-10-06
+
+### Fixed
+
+- **The cold-cache dialog always offers Compact and continue.** Since 0.20.0 a message that
+  looked like new work got only Clear and continue, and the route question took most short
+  follow-ups ("ja doe maar", "commit en push maar") for new work: over 59 real messages after a
+  pause it offered Clear instead of Compact for 40. The question now sees the message beside the
+  session's last requests and last answer: 9 of 59. Clear stays, as an extra first option.
+
+### Changed
+
+- **The coding agent starts the architect; sessionkit no longer does.** For a change Jev finds
+  architectural, the agent that made it gets a note: the file, Jev's reading and the decision
+  records it may go against. It checks a small case itself, or starts `sessionkit:architect` in
+  the background without its own reasoning, and puts a broken rule or a decision to the person.
+  With a model whose auto-mode classifier runs server side, such as Opus, every review the hook
+  started was refused ("the request that produced this action did not ask for one"); an agent
+  the model starts is reviewed as usual. The note comes once per file and reading in a session,
+  with the text of each decision record it names (up to 1500 characters).
+  Gone: the read-only `sessionkit:architect-review`, the review queue and the architect's
+  Follow/Decide/Discuss dialog.
+
 ## [0.20.0] - 2026-10-03
 
 ### Added

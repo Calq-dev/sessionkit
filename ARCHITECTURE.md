@@ -16,7 +16,7 @@ Rust modules (`src/`):
 - `skills`, `measure` - find repeated work; measure `start`'s selection. [observed]
 - `ask`, `grep/` - ask about a file; find code by asking Jev (`grep/` is a jevgrep port, with its own Jev client, ADR 0001). [observed]
 - `jev` - the shared System One client (one request, batch, Choice, estimate mode). `auth` - TypeSafe key from env, Keychain or 1Password. [observed]
-- `architect` - classifier that decides whether a change wakes the architect agent (ADR 0005). [observed]
+- `architect` - classifier that decides whether a change is architectural, and hands the plugin the text of each decision record it goes against (ADR 0005). [observed]
 - `js` - small helpers for `serde_json::Value` access, used everywhere. `setup` - installs status line, hooks, skill and plugin into `~/.claude`. [observed]
 
 Plugin (`plugin/`): `hooks/index.js` registers the function hooks (`compact`, `fold`, `read`, `edit`, `effort`, `prompt`, `agent`, `repeat`, `architect`; `waiting.js` is shared); `agents/architect.md`, `skills/architecture`, `output-styles/robot.md`; `.claude-plugin/` manifests. `eval/` holds measurement scripts; `packaging/homebrew` and `.github/workflows/release.yml` build and publish via a Homebrew tap. [observed]
@@ -45,6 +45,7 @@ Plugin (`plugin/`): `hooks/index.js` registers the function hooks (`compact`, `f
 - Jev selects and judges; it never writes or summarizes; kept text stays verbatim. [observed, README]
 - Commands that need no key run with no network (`usage`, status line, hooks). [observed, README]
 - Architect advice never blocks; only decision or drift asks the person (ADR 0005). [observed]
+- Plugin hooks never spawn agents (auto mode refuses it); a hook appends a note and the model in the loop starts `sessionkit:architect`. [confirmed]
 - Two similar things stay separate when they differ in policy, not just in code (ADR 0001-0003). [observed]
 
 ## Decisions
@@ -52,7 +53,7 @@ Plugin (`plugin/`): `hooks/index.js` registers the function hooks (`compact`, `f
 - [0002](docs/adr/0002-no-policy-module-for-cold-and-large-sessions.md) no shared policy module for cold and large sessions.
 - [0003](docs/adr/0003-transcript-lookups-stay-separate.md) transcript lookups stay separate.
 - [0004](docs/adr/0004-prices-are-a-built-in-table.md) prices are a built-in table.
-- [0005](docs/adr/0005-the-architect-is-a-plugin-agent-woken-by-jev.md) the architect is a plugin agent that Jev wakes.
+- [0005](docs/adr/0005-the-architect-is-a-plugin-agent-woken-by-jev.md) the architect is a plugin agent; Jev classifies, the hook only notes the coding agent, which starts the review itself.
 
 ## Known debt
 - AD-001: Module cycles (to be fixed soon). `claude` <-> `architect`, `claude` <-> `peers`, `start` <-> `next` (`src/claude.rs:20-26`, `src/architect.rs:15`, `src/peers.rs`, `src/next.rs`). Pre-existing at onboarding. Policy: warn on every change that touches these modules or edges; fix is planned. [confirmed]

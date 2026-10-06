@@ -213,29 +213,9 @@ fn relevance(probabilities: &Map<String, Value>) -> (f64, String) {
     (sum, top.to_string())
 }
 
-/// What the architect is told when it wakes: the change, what Jev read in it, and what it already
-/// said this session. Its standing instructions and the memory it reads itself.
-fn brief(root: &Path, change: &Change, probabilities: &Map<String, Value>, against: &[&Decision], earlier: &[String]) -> String {
-    let mut read: Vec<(&str, f64)> = CATEGORIES.iter().filter(|(_, _, counts)| *counts)
-        .map(|(name, _, _)| (*name, probabilities.get(*name).and_then(Value::as_f64).unwrap_or(0.0)))
-        .collect();
-    read.sort_by(|a, b| b.1.total_cmp(&a.1));
-    let read = read.iter().map(|(name, p)| format!("{name} {p:.2}")).collect::<Vec<_>>().join(", ");
-    let what = if change.kind == "plan" { "presented this plan".to_string() } else { format!("made this {} to `{}`", change.kind, change.file) };
-    let mut text = format!(
-        "Review. Repository: {}. The coding agent {what}. The classifier read it as: {read}.\n\n```\n{}\n```\n",
-        root.display(), change.text);
-    for decision in against {
-        text.push_str(&format!("\nThe classifier read it as going against `{}`:\n\n{}\n", decision.file, js::trim(&decision.text)));
-    }
-    if !earlier.is_empty() {
-        text.push_str("\nWhat you already told the coding agent this session; do not repeat it:\n");
-        for advice in earlier {
-            text.push_str(&format!("- {advice}\n"));
-        }
-    }
-    text
-}
+/// The text of a decision record the change goes against, as the coding agent's note carries it:
+/// enough to judge by without reading the file, which stays the pointer for the rest.
+const RECORD_CHARS: usize = 1500;
 
 fn log(record: &Value) -> Result<()> {
     std::fs::create_dir_all(cache_dir()).map_err(|e| e.to_string())?;
@@ -253,7 +233,7 @@ fn classifier() -> Option<Box<dyn Classifier>> {
 }
 
 /// For the plugin's hooks: input {session_id, cwd, kind (plan, edit, create), file, change,
-/// earlier}; answers {wake, relevance, category, probabilities, root, brief} or {wake: false,
+/// answers {wake, relevance, category, probabilities, root, against, against_text} or {wake: false,
 /// reason}.
 pub fn check(input: &Value, classifier: Option<&dyn Classifier>, wake_at: f64) -> Result<Value> {
     let file = js::str_of(input, "file");
@@ -278,9 +258,8 @@ pub fn check(input: &Value, classifier: Option<&dyn Classifier>, wake_at: f64) -
     let (relevance, category) = relevance(&probabilities);
     let against = against(&reading.decisions);
     let wake = relevance >= wake_at || !against.is_empty();
-    let against_text: Vec<&Decision> = decisions.iter().filter(|d| against.contains(&d.file)).collect();
-    let earlier: Vec<String> = input.get("earlier").and_then(Value::as_array).into_iter().flatten()
-        .filter_map(Value::as_str).map(String::from).collect();
+    let against_text: Map<String, Value> = decisions.iter().filter(|d| against.contains(&d.file))
+        .map(|d| (d.file.clone(), json!(js::clip(js::trim(&d.text), RECORD_CHARS)))).collect();
     Ok(json!({
         "wake": wake,
         "relevance": num(relevance),
@@ -291,7 +270,7 @@ pub fn check(input: &Value, classifier: Option<&dyn Classifier>, wake_at: f64) -
         "root": root.to_string_lossy(),
         "file": change.file,
         "classifier": classifier.name(),
-        "brief": if wake { brief(&root, &change, &probabilities, &against_text, &earlier) } else { String::new() },
+        "against_text": against_text,
     }))
 }
 
@@ -582,7 +561,7 @@ mod tests {
         let answer = check(&edit(&root, "src/checkout/total.rs", "-    let t = sum(items);\n+    let total = sum(items);"), Some(&fake), WAKE_AT).unwrap();
         assert_eq!(answer["wake"], false);
         assert_eq!(answer["category"], "local");
-        assert_eq!(answer["brief"], "");
+        assert_eq!(answer["against_text"], json!({}));
     }
 
     #[test]
@@ -596,10 +575,7 @@ mod tests {
         let seen = fake.seen.borrow();
         assert_eq!(seen[0].0, "src/checkout/complete.rs");
         assert!(seen[0].1.contains("Billing owns invoices"));
-        let brief = answer["brief"].as_str().unwrap();
-        assert!(brief.contains("made this edit to `src/checkout/complete.rs`"));
-        assert!(brief.contains("boundary 0.72, duplicate 0.10, structure 0.08, expands_debt 0.00"));
-        assert!(brief.contains(change));
+        assert_eq!(answer["file"], "src/checkout/complete.rs");
     }
 
     #[test]
@@ -633,15 +609,14 @@ mod tests {
     }
 
     #[test]
-    fn a_plan_is_found_from_the_working_folder_and_earlier_advice_is_passed_on() {
+    fn a_plan_is_found_from_the_working_folder() {
         let root = repository(MEMORY_TEXT);
         let fake = Fake::new(json!({"structure": 0.8, "local": 0.2}));
         let input = json!({"session_id": "s1", "cwd": root.join("src/checkout"), "kind": "plan", "file": "",
-            "change": "Add a SavedAddress table owned by Checkout.", "earlier": ["Billing owns invoices; go through BillingGateway."]});
+            "change": "Add a SavedAddress table owned by Checkout."});
         let answer = check(&input, Some(&fake), WAKE_AT).unwrap();
-        let brief = answer["brief"].as_str().unwrap();
-        assert!(brief.contains("presented this plan"));
-        assert!(brief.contains("do not repeat it:\n- Billing owns invoices; go through BillingGateway."));
+        assert_eq!(answer["wake"], true);
+        assert_eq!(fake.seen.borrow()[0].0, "");
     }
 
     #[test]
@@ -653,7 +628,7 @@ mod tests {
     }
 
     #[test]
-    fn a_change_against_a_recorded_decision_wakes_the_architect_with_that_record() {
+    fn a_change_against_a_recorded_decision_carries_that_record_s_text() {
         let root = repository(MEMORY_TEXT);
         std::fs::create_dir_all(root.join(DECISIONS)).unwrap();
         std::fs::write(root.join("docs/adr/0003-invoice-numbers.md"), "# Invoice numbers are gapless\n\nOnly billing assigns them.\n").unwrap();
@@ -664,9 +639,7 @@ mod tests {
         assert_eq!(answer["wake"], true);
         assert_eq!(answer["against"], json!(["docs/adr/0003-invoice-numbers.md"]));
         assert_eq!(answer["decisions"]["docs/adr/0001-one-crate.md"]["unrelated"], 1.0);
-        let brief = answer["brief"].as_str().unwrap();
-        assert!(brief.contains("going against `docs/adr/0003-invoice-numbers.md`:\n\n# Invoice numbers are gapless\n\nOnly billing assigns them."));
-        assert!(!brief.contains("# One crate"));
+        assert_eq!(answer["against_text"], json!({"docs/adr/0003-invoice-numbers.md": "# Invoice numbers are gapless\n\nOnly billing assigns them."}));
     }
 
     #[test]
