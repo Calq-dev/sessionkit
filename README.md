@@ -371,32 +371,35 @@ change touches the architecture.
   "checkout imports billing's repository" is judged against your rules, your debt and your
   exceptions. In the same request Jev holds the change against each decision record in
   `docs/adr/` on its own: does it follow it, go against it, or not touch it? A change that goes
-  against a record wakes the architect with that record's full text. Ordinary work ends there,
+  against a record is named in the note. Ordinary work ends there,
   at about $0.0005 per change plus a few hundredths of a cent per thousand words of decision
-  records. A change Jev finds
-  architectural wakes the architect in the background: a Sonnet subagent with the change, the
-  memory and the code, but not the coding agent's reasoning, so its view is its own. Its answer
-  reaches the agent as one short message:
+  records. For a change Jev finds architectural, the agent that made it gets one short note:
 
   ```text
-  sessionkit architect (DRIFT, on src/checkout/mod.rs): Checkout now calls
-  billing::persistence::InvoiceRepository::insert directly. This breaks "Checkout depends on
-  billing only through BillingGateway" [confirmed] and bypasses ADR-0002.
-  Restore the gateway call; if checkout needs more, add it to the gateway.
+  sessionkit architect (Jev): the change to src/checkout/mod.rs may affect the architecture in
+  ARCHITECTURE.md: read as boundary (0.99); it may go against
+  docs/adr/0002-billing-only-writes-invoices.md. Check it before you go on. …
+
+  docs/adr/0002-billing-only-writes-invoices.md:
+  # Only billing writes invoices
+  …
   ```
 
-  No concern means no message. When the architect finds a decision or drift, Claude Code's own
-  dialog asks you: **Follow the advice**, **Take it as a decision** or **Discuss first**. A
-  decision you take is written into the memory by the architect when the turn ends.
+  Each record it may go against comes with its text (up to 1500 characters), so the agent need
+  not read it first. The agent checks a small case itself: one file against one named record. Otherwise it starts
+  the architect in the background, a Sonnet subagent with the change, the memory and the code but
+  not the agent's reasoning, so its view is its own. A broken rule or an architectural decision
+  goes to you before the agent goes on; a decision you take, the architect writes into the
+  memory. sessionkit starts no agent itself: in auto mode Claude Code's classifier refuses an
+  agent a hook starts, so the agent the model starts is the one that works in every mode.
 - **An audit** compares the repository with the baseline: `/sessionkit:architecture audit`
   reports what weakened, which dependencies and responsibilities moved, which statements in the
   memory are no longer true, and which debt grew or shrank. It proposes memory edits; you choose
   which to apply and whether the audit becomes the new baseline.
 
-What it costs: one Jev question per change in an onboarded repository, nothing elsewhere. A
-review took 6 to 8 seconds and two model turns on the test repository; at most one runs at a
-time, and changes that arrive meanwhile go into the next one together. Every check is logged in
-`~/.cache/sessionkit/architect-checks.jsonl` with Jev's reading, woken or not.
+What it costs: one Jev question per change in an onboarded repository, nothing elsewhere. A note
+comes once per file and reading in a session. Every check is logged in
+`~/.cache/sessionkit/architect-checks.jsonl` with Jev's reading, noted or not.
 
 Set it in `/config` under *Architect*: **advise** (the default), **shadow** (only the log; nothing
 wakes) or **off**. `SESSIONKIT_ARCHITECT_WAKE` sets the line (default 0.6).

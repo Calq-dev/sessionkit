@@ -120,12 +120,13 @@ export const register = (on) => {
 
     // Compact and continue means one thing to the person; how differs: with a handoff, a fresh
     // session continues this one with only what matters; without one, /compact compacts it here.
-    // New work clears this session (/clear) in this terminal and sends the message there.
+    // Compact is always offered. A message that looks like new work also gets Clear, first:
+    // /clear empties this session in this terminal and sends the message there.
     const here = `Continue here (${check.cost})`;
-    const first = check.route === "search" ? CLEAR : COMPACT;
+    const options = check.route === "search" ? [CLEAR, COMPACT, here] : check.fresh ? [COMPACT, here] : [COMPACT, here, STOP];
     let choice;
     try {
-      choice = await $.ui.ask(check.question, { options: check.fresh || first === CLEAR ? [first, here] : [first, here, STOP], header: "Cold cache" });
+      choice = await $.ui.ask(check.question, { options, header: "Cold cache" });
     } catch {
       choice = STOP; // dismissed
     }
@@ -137,7 +138,7 @@ export const register = (on) => {
     }
     try {
       if (choice === COMPACT) {
-        const answer = await sessionkit($, ["cold-choice", "fresh"], { ...input, route: check.route });
+        const answer = await sessionkit($, ["cold-choice", "fresh"], input);
         if (answer.ok) return { drop: "sessionkit: closing this session; your message continues in a fresh one." };
       }
     } catch {

@@ -1,15 +1,15 @@
 // The architect, against the engine: sessionkit (Jev's reading), the tools, the subagents and the
 // person are stood in for beneath the plugin. Run with: claude plugin test plugin
 //
-// The test kit gives a plugin's own $.agent.spawn no agent id (core sets it), so a review that
-// the plugin starts cannot be followed to its answer here, and a session does not show a plugin
-// the tool calls of an agent it started itself. The answer's way into the context is
-// tested through deliver and after with the test's own engine; the whole loop was run live.
+// The note's way into a loop that has ended is tested through notify with the test's own engine;
+// the whole loop was run live.
 import { expect, mock, test } from "claude-code/testing";
-import { after, deliver, offer } from "./architect.js";
+import { notify, offer } from "./architect.js";
 
 const QUIET = { wake: false, relevance: 0.02, category: "local" };
-const LOUD = { wake: true, relevance: 0.97, category: "boundary", root: "/repo", brief: "Review. Repository: /repo. The coding agent made this edit to `src/checkout/complete.rs`." };
+const LOUD = { wake: true, relevance: 0.97, category: "boundary", root: "/repo", file: "src/checkout/complete.rs",
+  against: ["docs/adr/0002-billing-only-writes-invoices.md"],
+  against_text: { "docs/adr/0002-billing-only-writes-invoices.md": "# Billing only writes invoices\n\nOther modules go through BillingGateway." } };
 
 /** Stand-ins for the world beneath the plugin; `checks` answers each architect-check in turn. */
 function world(on, checks) {
@@ -42,8 +42,6 @@ function world(on, checks) {
 }
 
 const EDIT = { tool: "Edit", file_path: "/repo/src/checkout/complete.rs", old_string: "let t = 1;", new_string: "use crate::billing::persistence::InvoiceRepository;" };
-const REVIEWED = [{ brief: LOUD.brief, loop: "worker-1", file: EDIT.file_path, root: "/repo" }];
-
 /** The test's engine with the display a plugin's own has: its log, and the person's `choice`. */
 const engine = ($, seen, choice) => ({
   ...$,
@@ -57,8 +55,13 @@ const engine = ($, seen, choice) => ({
   },
 });
 
-const ADVICE = "VERDICT: ADVICE\nThis writes invoices from Checkout; the memory gives invoice persistence to Billing.\nGo through BillingGateway.";
-const DECISION = "VERDICT: DECISION\nCheckout takes over invoice persistence from Billing.\nIf intended, record it.\nQUESTION: Should Checkout own invoice persistence from now on?";
+const NOTE = "sessionkit architect (Jev): the change to src/checkout/complete.rs may affect the architecture in ARCHITECTURE.md: " +
+  "read as boundary (0.97); it may go against docs/adr/0002-billing-only-writes-invoices.md. Check it before you go on. " +
+  "For one file against one named decision record, hold it against that record and the matching part of ARCHITECTURE.md yourself. " +
+  "Otherwise start the agent sessionkit:architect in the background with a prompt that starts with `Review. Repository: /repo.` " +
+  "and gives the file and the change, not why you made it, so it judges the change on its own. If the change breaks a rule " +
+  "or makes an architectural decision, put it to the person; a decision they take, sessionkit:architect records with a prompt " +
+  "that starts with `Record.`\n\ndocs/adr/0002-billing-only-writes-invoices.md:\n# Billing only writes invoices\n\nOther modules go through BillingGateway.";
 
 test("an ordinary edit is checked and wakes nothing", async ($, on) => {
   const clock = mock.clock(on);
@@ -66,16 +69,26 @@ test("an ordinary edit is checked and wakes nothing", async ($, on) => {
   const result = await $.tool.call({ ...EDIT, new_string: "let total = 1;" });
   expect(result.result.filePath).toBe(EDIT.file_path);
   await clock.settle();
-  expect(seen.checked).toEqual([{ session_id: "session-1", cwd: "/repo", kind: "edit", file: EDIT.file_path, change: "-let t = 1;\n+let total = 1;", earlier: [] }]);
-  expect(seen.spawns).toEqual([]);
+  expect(seen.checked).toEqual([{ session_id: "session-1", cwd: "/repo", kind: "edit", file: EDIT.file_path, change: "-let t = 1;\n+let total = 1;" }]);
+  expect(seen.appended).toEqual([]);
 });
 
-test("an architectural edit wakes the architect with the brief, in the background", async ($, on) => {
+test("an architectural edit is checked, and the plugin starts no agent", async ($, on) => {
   const clock = mock.clock(on);
   const seen = world(on, [LOUD]);
   await $.tool.call(EDIT);
   await clock.settle();
-  expect(seen.spawns).toEqual([{ type: "sessionkit:architect-review", prompt: LOUD.brief }]);
+  expect(seen.checked.length).toBe(1);
+  expect(seen.logs).toEqual([]);
+  expect(seen.spawns).toEqual([]);
+});
+
+test("Jev's reading goes to the loop as a note, once per file and reading", async ($, on) => {
+  const seen = world(on, []);
+  const reading = { ...LOUD, file: "src/checkout/refund.rs" };
+  await notify(engine($, seen), undefined, reading);
+  await notify(engine($, seen), undefined, reading);
+  expect(seen.appended).toEqual([{ text: NOTE.replace("complete.rs", "refund.rs"), agentId: undefined }]);
 });
 
 test("a plan is checked as a plan", async ($, on) => {
@@ -94,13 +107,13 @@ test("a new file is checked with its content", async ($, on) => {
   expect(seen.checked[0]).toMatchObject({ kind: "create", file: "/repo/src/checkout/invoice.rs", change: "pub struct Invoice;" });
 });
 
-test("in shadow Jev's reading is logged by sessionkit and nothing wakes", { options: { architect: "shadow" } }, async ($, on) => {
+test("in shadow Jev's reading is logged by sessionkit and no note goes out", { options: { architect: "shadow" } }, async ($, on) => {
   const clock = mock.clock(on);
   const seen = world(on, [LOUD]);
   await $.tool.call(EDIT);
   await clock.settle();
   expect(seen.checked.length).toBe(1);
-  expect(seen.spawns).toEqual([]);
+  expect(seen.appended).toEqual([]);
 });
 
 test("off checks nothing", { options: { architect: "off" } }, async ($, on) => {
@@ -125,46 +138,12 @@ test("an architect writes only its memory, and its writes are not checked", asyn
   expect(seen.checked).toEqual([]);
 });
 
-test("advice goes to the loop that made the change, or to the main conversation once that loop has ended", async ($, on) => {
+test("a note for a loop that has ended goes to the main conversation", async ($, on) => {
   const seen = world(on, []);
-  await deliver(engine($, seen), REVIEWED, ADVICE);
-  const text = `sessionkit architect (ADVICE, on ${EDIT.file_path}): This writes invoices from Checkout; the memory gives invoice persistence to Billing.\nGo through BillingGateway.`;
+  await notify(engine($, seen), "worker-1", { ...LOUD, file: "", category: "structure", against: [], against_text: {} });
+  const text = expect.stringContaining("the plan may affect the architecture in ARCHITECTURE.md: read as structure (0.97). Check it");
   // No loop worker-1 runs in the test, so the engine refuses the first row and the main conversation takes it.
   expect(seen.appended).toEqual([{ agentId: "worker-1", text }, { agentId: undefined, text }]);
-  expect(seen.asked).toEqual([]);
-});
-
-test("no concern stays out of the context", async ($, on) => {
-  const seen = world(on, []);
-  await deliver(engine($, seen), REVIEWED, "VERDICT: NO_CONCERN\nBilling is called through its gateway.");
-  expect(seen.appended).toEqual([]);
-});
-
-test("a decision is put to the person; taken as one, it is recorded when the main turn ends", async ($, on) => {
-  const seen = world(on, []);
-  await deliver(engine($, seen, "Take it as a decision"), REVIEWED, DECISION);
-  expect(seen.asked).toEqual([{ question: "Architect: Should Checkout own invoice persistence from now on?", options: ["Follow the advice", "Take it as a decision", "Discuss first"] }]);
-  expect(seen.appended[0].text).toContain("The person takes this as an intended architectural decision: go on.");
-  expect(seen.appended[0].text).not.toContain("QUESTION:");
-  await after(engine($, seen), true);
-  expect(seen.spawns).toEqual([{
-    type: "sessionkit:architect",
-    prompt: `Record. Repository: /repo. Decisions:\n- ${EDIT.file_path}: Checkout takes over invoice persistence from Billing.`,
-  }]);
-});
-
-test("a decision the person wants to discuss stops the coding agent after its step", async ($, on) => {
-  const seen = world(on, []);
-  await deliver(engine($, seen, "Discuss first"), REVIEWED, DECISION);
-  expect(seen.appended[0].text).toContain("then stop and put the architect's concern and the options to the person");
-});
-
-test("a dismissed question leaves the advice as it is, and nothing is recorded", async ($, on) => {
-  const seen = world(on, []);
-  await deliver(engine($, seen), REVIEWED, DECISION);
-  expect(seen.appended[0].text).toBe(`sessionkit architect (DECISION, on ${EDIT.file_path}): Checkout takes over invoice persistence from Billing.\nIf intended, record it.`);
-  await after(engine($, seen), true);
-  expect(seen.spawns).toEqual([]);
 });
 
 /** The engine for offer: sessionkit's answers per hook, and what the plugin did with them. */

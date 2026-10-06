@@ -76,11 +76,11 @@ test("compact and continue hands the message over and keeps it out of this one",
   expect(result.drop).toContain("fresh one");
 });
 
-test("new work is offered clear and continue: /clear here, then the message, no fresh session", async ($, on) => {
+test("new work is offered clear and continue beside compact: /clear here, then the message, no fresh session", async ($, on) => {
   const clock = mock.clock(on);
   const seen = world(on, { ...COLD, route: "search" }, "Clear and continue");
   const result = await $.prompt.submit(typed("something new"));
-  expect(seen.asked).toEqual([["Clear and continue", "Continue here ($2.82)"]]);
+  expect(seen.asked).toEqual([["Clear and continue", "Compact and continue", "Continue here ($2.82)"]]);
   expect(seen.runs).toEqual(["cold-check"]);
   expect(result.drop).toContain("clearing");
   await clock.advance(0);

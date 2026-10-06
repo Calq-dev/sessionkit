@@ -7,7 +7,7 @@
     "architect": {
       "type": "string",
       "title": "Architect",
-      "description": "In a repository onboarded with /sessionkit:architecture onboard: advise wakes the architect for a plan or change Jev finds architectural, and puts its advice in the agent's context; shadow only logs Jev's reading; off checks nothing.",
+      "description": "In a repository onboarded with /sessionkit:architecture onboard: advise puts a note in the agent's context for a plan or change Jev finds architectural, with the decision records it may go against; shadow only logs Jev's reading; off checks nothing.",
       "options": [
         "advise",
         "shadow",

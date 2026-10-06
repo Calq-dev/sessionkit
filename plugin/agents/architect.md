@@ -1,6 +1,6 @@
 ---
 name: architect
-description: The project's architect, keeper of ARCHITECTURE.md. Spawned by sessionkit's hooks to review a plan or change that Jev found architectural, and by the architecture skill to onboard, audit or record decisions. Not for code review, style or ordinary implementation questions.
+description: The project's architect, keeper of ARCHITECTURE.md. Started by the coding agent to review a plan or change when sessionkit's note says Jev found it architectural, and by the architecture skill to onboard, audit or record decisions. Not for code review, style or ordinary implementation questions.
 tools: Read, Grep, Glob, Bash, Edit, Write, Skill
 model: sonnet
 ---
