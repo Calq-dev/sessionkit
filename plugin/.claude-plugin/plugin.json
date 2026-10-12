@@ -1,9 +1,33 @@
 {
   "name": "sessionkit",
   "version": "__VERSION__",
-  "description": "sessionkit in Claude Code: compaction without a summary, the cold-cache and large-context dialogs, the edit retry, the architect, and the robot output style.",
+  "description": "Code search, focused file questions, lean context and cache-cost awareness for Claude Code.",
   "license": "MIT",
   "userConfig": {
+    "codeSearchTools": {
+      "type": "boolean",
+      "title": "Code search tools",
+      "description": "Offers search_code and ask_file as visible agent tools over sessionkit grep/ask, with a short navigation instruction. Eligible source is sent to TypeSafe only when an agent calls a tool; Jev calls are paid. Exact symbols stay for Grep. Disable to keep CLI-only navigation.",
+      "default": true
+    },
+    "askOnAutoDenial": {
+      "type": "boolean",
+      "title": "Ask after an Auto denial (experimental)",
+      "description": "After an Auto denial in the main loop, asks whether to allow that exact action once. No Jev, inferred consent or saved permission rules. Closing the dialog or a missing interactive UI keeps the denial. Same-call retry after a real classifier denial has not yet been verified live.",
+      "default": false
+    },
+    "permissionProbe": {
+      "type": "boolean",
+      "title": "Permission probe (prototype)",
+      "description": "Diagnostic only: logs tool.check inputs and verdicts, including potentially sensitive arguments, to the debug log. Never changes a permission decision or prompts for approval.",
+      "default": false
+    },
+    "projectWorkflow": {
+      "type": "boolean",
+      "title": "Compact project workflow (experimental)",
+      "description": "Coaches main agents and subagents to adapt within a task and reuse one compact project skill with selectively loaded references/helpers. Persistent workflow changes require an exact proposal and explicit user approval. Instruction-only: no automatic skill/memory writes, transcript mining, script execution or Jev calls; does not block other memory writers. Use /sessionkit:project-workflow onboard or review explicitly.",
+      "default": false
+    },
     "architect": {
       "type": "string",
       "title": "Architect",

@@ -306,6 +306,30 @@ fn rebuilds_of(calls: &[Call]) -> Vec<Rebuild> {
     rebuilds
 }
 
+struct SubagentRow {
+    id: String,
+    session: String,
+    totals: Totals,
+    rebuilds: Vec<Rebuild>,
+    writes5m: f64,
+    writes1h: f64,
+}
+
+impl SubagentRow {
+    fn longer_ttl_candidate(&self) -> bool {
+        self.rebuilds.iter().filter(|r| r.gap > Ttl::FiveMinutes.ms() && r.gap < Ttl::OneHour.ms()).count() >= 2
+            && self.writes5m > self.writes1h
+    }
+    fn json(&self) -> Value {
+        json!({"id": self.id, "session": self.session, "usage": self.totals.json(),
+            "cacheWrites5m": num(self.writes5m), "cacheWrites1h": num(self.writes1h),
+            "longerTtlCandidate": self.longer_ttl_candidate(),
+            "suspectedRebuilds": self.rebuilds.iter().map(|r| json!({
+                "gapMs": num(r.gap), "tokens": num(r.tokens), "cost": num(r.cost)
+            })).collect::<Vec<_>>()})
+    }
+}
+
 struct SessionTotals {
     id: String,
     project: String,
@@ -352,6 +376,7 @@ struct Report {
     by_kind: [Totals; 2],
     by_project: Vec<(String, Totals)>,
     sessions: Vec<SessionRow>,
+    subagents: Vec<SubagentRow>,
     rebuilds: (usize, f64, f64, usize),
     restart_candidates: Vec<usize>,
     unpriced_models: Vec<String>,
@@ -369,6 +394,7 @@ fn summarize(transcripts: &[Transcript], options: &Options) -> Report {
     let mut by_kind = [Totals::default(), Totals::default()];
     let mut by_project: IndexMap<String, Totals> = IndexMap::new();
     let mut sessions: IndexMap<String, SessionTotals> = IndexMap::new();
+    let mut subagents = Vec::new();
     let mut unpriced_models: IndexSet<String> = IndexSet::new();
 
     for transcript in transcripts {
@@ -392,6 +418,16 @@ fn summarize(transcripts: &[Transcript], options: &Options) -> Report {
             }
             session.project = project.clone();
             session.calls = calls.clone();
+        }
+        if file.subagent {
+            let mut totals = Totals::default();
+            for call in &calls { totals.add(call); }
+            subagents.push(SubagentRow {
+                id: file.path.file_stem().unwrap_or_default().to_string_lossy().into_owned(),
+                session: file.session.clone(), totals, rebuilds: rebuilds_of(&calls),
+                writes5m: calls.iter().map(|c| c.write5m).sum(),
+                writes1h: calls.iter().map(|c| c.write1h).sum(),
+            });
         }
         let project_totals = by_project.entry(project).or_default();
 
@@ -442,6 +478,7 @@ fn summarize(transcripts: &[Transcript], options: &Options) -> Report {
         .collect();
     restart_candidates.sort_by(|&a, &b| rows[b].per_call_now.partial_cmp(&rows[a].per_call_now).unwrap_or(std::cmp::Ordering::Equal));
 
+    subagents.sort_by(|a, b| b.totals.cost.write.total_cmp(&a.totals.cost.write));
     let mut by_model: Vec<(String, Totals)> = by_model.into_iter().collect();
     by_model.sort_by(|a, b| by_cost_desc(&a.1, &b.1));
     let mut by_project: Vec<(String, Totals)> = by_project.into_iter().collect();
@@ -454,6 +491,7 @@ fn summarize(transcripts: &[Transcript], options: &Options) -> Report {
         by_kind,
         by_project,
         sessions: rows,
+        subagents,
         rebuilds: (
             all_rebuilds.len(),
             all_rebuilds.iter().fold(0.0, |s, r| s + r.tokens),
@@ -475,6 +513,7 @@ fn report_json(report: &Report) -> Value {
         "byKind": {"main": report.by_kind[0].json(), "subagent": report.by_kind[1].json()},
         "byProject": rows(&report.by_project, "project"),
         "sessions": report.sessions.iter().map(SessionRow::json).collect::<Vec<_>>(),
+        "subagents": report.subagents.iter().map(SubagentRow::json).collect::<Vec<_>>(),
         "rebuilds": {
             "count": report.rebuilds.0, "tokens": num(report.rebuilds.1), "cost": num(report.rebuilds.2), "afterAnHour": report.rebuilds.3,
         },
@@ -567,11 +606,22 @@ fn render(report: &Report, options: &Options) -> String {
 
     let (count, rebuild_tokens, rebuild_cost, after_an_hour) = report.rebuilds;
     out.push(String::new());
-    out.push("Cold cache rebuilds".into());
+    out.push("Cold cache rebuilds (main sessions)".into());
     out.push(String::new());
     out.push(format!("{count} calls wrote the context again after a pause longer than the cache lifetime (5 minutes or 1 hour): {} tokens, {} ({} of the total). \
         {after_an_hour} came after more than an hour.", tokens(rebuild_tokens), usd(rebuild_cost), share(rebuild_cost, total_cost)));
     out.push("A heuristic: a large cache write after a pause, larger than the cache read in the same call.".into());
+
+    if !report.subagents.is_empty() {
+        out.push(table("Subagent cache writes (each agent's own timeline)",
+            format!("{}{}{}{}  agent / parent", lpad("5m tokens", 12), lpad("1h tokens", 12), lpad("rebuilds", 10), lpad("write cost", 12)),
+            report.subagents.iter().take(top).map(|a| format!("{}{}{}{}  {} / {}{}",
+                lpad(&tokens(a.writes5m), 12), lpad(&tokens(a.writes1h), 12),
+                lpad(&a.rebuilds.len().to_string(), 10), lpad(&usd(a.totals.cost.write), 12),
+                a.id, js::head(&a.session, 8), if a.longer_ttl_candidate() { " — repeated 5–60m gaps; consider longer TTL if supported" } else { "" }
+            )).collect()));
+        out.push("Rebuilds are heuristic; prefix changes can also cause writes. Costs are API-equivalent, not subscription quota.".into());
+    }
 
     if !report.restart_candidates.is_empty() {
         out.push(table(&format!("Cheaper to restart: active in the last {} days, last context above {}",
@@ -948,6 +998,28 @@ mod tests {
         let gaps = |calls: &[Call]| rebuilds_of(calls).iter().map(|r| r.gap / 60000.0).collect::<Vec<f64>>();
         assert_eq!(gaps(&[call(0.0, 0.0, 50000.0), call(30.0, 0.0, 50000.0), call(100.0, 0.0, 50000.0)]), [70.0]);
         assert_eq!(gaps(&[call(0.0, 50000.0, 0.0), call(30.0, 50000.0, 0.0)]), [30.0]);
+    }
+
+    #[test]
+    fn subagent_timelines_are_not_merged_and_main_rebuilds_stay_separate() {
+        let file = |id: &str| TranscriptFile { path: PathBuf::from(format!("{id}.jsonl")), folder: "project".into(), session: "parent".into(), subagent: true };
+        let call = |minute: f64| Call { time: minute * 60000.0, call: ApiCall {
+            id: None, model: Some("claude-sonnet-4-6".into()), fast: false,
+            input: 1.0, read: 0.0, write5m: 50000.0, write1h: 0.0, output: 1.0 } };
+        let a = file("a");
+        let b = file("b");
+        let transcripts = [
+            Transcript { file: &a, calls: vec![call(0.0),call(10.0),call(20.0)], title: String::new(), cwd: String::new() },
+            Transcript { file: &b, calls: vec![call(5.0),call(15.0)], title: String::new(), cwd: String::new() },
+        ];
+        let report = summarize(&transcripts, &parse_arguments(&[]));
+        assert_eq!(report.rebuilds.0, 0);
+        assert_eq!(report.subagents.len(), 2);
+        assert_eq!(report.subagents[0].rebuilds.len(), 2);
+        assert_eq!(report.subagents[1].rebuilds.len(), 1);
+        assert!(report.subagents[0].longer_ttl_candidate());
+        assert!(!report.subagents[1].longer_ttl_candidate());
+        assert_eq!(report_json(&report)["subagents"][0]["cacheWrites5m"],150000.0);
     }
 
     #[test]

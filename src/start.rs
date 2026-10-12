@@ -1470,14 +1470,18 @@ pub fn start_main(argv: &[String]) -> Result<()> {
     }
 
     if let Some(message) = &plan.first_message {
-        let copied = Command::new("pbcopy").stdin(Stdio::piped()).spawn().and_then(|mut child| {
+        let (clipboard, args): (&str, &[&str]) = if cfg!(target_os = "macos") { ("pbcopy", &[]) }
+            else if std::env::var_os("WAYLAND_DISPLAY").is_some() { ("wl-copy", &[]) }
+            else { ("xclip", &["-selection", "clipboard"]) };
+        let copied = Command::new(clipboard).args(args).stdin(Stdio::piped()).spawn().and_then(|mut child| {
             child.stdin.take().expect("piped stdin").write_all(message.as_bytes())?;
             child.wait()
         });
-        if !copied.is_ok_and(|status| status.success()) {
-            return Err("Command failed: pbcopy".into());
+        if copied.is_ok_and(|status| status.success()) {
+            eprintln!("sessionkit: jcode gets the first message once it is live. A fallback copy is on the clipboard.");
+        } else {
+            eprintln!("sessionkit: clipboard unavailable ({clipboard}); continuing without a clipboard fallback. Install wl-clipboard or xclip on a Linux desktop if needed.");
         }
-        eprint!("sessionkit: jcode gets the first message once it is live. It is also on the clipboard; paste it with Cmd+V if it does not arrive.\n");
     }
 
     // A continued session starts in its own folder, so its paths and project settings apply.

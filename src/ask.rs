@@ -14,7 +14,7 @@
 use crate::Result;
 use crate::grep::fs::{Policy, Reader, SnapshotResult};
 use crate::js;
-use crate::jev::{PRICE_PER_MILLION_TOKENS, model, post};
+use crate::jev::{price_per_million_tokens, model, post};
 use serde_json::{Map, Value, json};
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
@@ -23,8 +23,9 @@ const USAGE: &str = "Usage: sessionkit ask [options] <file> \"question\" [questi
        sessionkit ask --filter \"question\" [--yes text] [--no text] <file or folder> ...
        sessionkit ask --find <file> \"question\" [--max n]
 
-Asks Jev (TypeSafe) about a file instead of reading it. The file is sent to TypeSafe; the
-answer is a probability. Above 0.70 read it as yes, below 0.30 as no, in between read the file.
+Asks the configured decision provider about a file instead of reading it (Jev/TypeSafe by
+default; SESSIONKIT_PROVIDER selects another provider). The file is sent to that provider;
+the answer is a probability. Above 0.70 read it as yes, below 0.30 as no, in between read the file.
 Under every answer that is not a clear no stands the line that answers it.
 
 Question options, after the question they belong to:
@@ -314,7 +315,7 @@ fn pct(value: Option<f64>) -> String {
 }
 
 fn cost(tokens: f64) -> String {
-    format!("${}", js::fixed(tokens / 1e6 * PRICE_PER_MILLION_TOKENS, 4))
+    format!("${}", js::fixed(tokens / 1e6 * price_per_million_tokens(), 4))
 }
 
 fn place(parts: &[Part], part: usize) -> String {
@@ -439,6 +440,20 @@ fn ask_window(path: &str, question: &str, window: &Window) -> Result<(f64, Vec<(
     let probabilities = data["answers"]["line"]["probabilities"].as_object().into_iter().flatten()
         .filter_map(|(n, p)| Some((n.parse().ok()?, p.as_f64()?))).collect();
     Ok((exists, probabilities, tokens_of(&data)))
+}
+
+/// For the architect: the one line of `text` that answers `question`, with its number and how
+/// sure that is, or None when no window answers it well enough. The windows are asked in parallel,
+/// as in --find; the caller pays one request per window of the text.
+pub fn find_line(path: &str, text: &str, question: &str) -> Result<Option<(usize, String, f64)>> {
+    let (windows, _, _) = windows(text);
+    let answers: Vec<(f64, Vec<(usize, f64)>, f64)> =
+        js::pool(&windows, CONCURRENCY, |w, _| ask_window(path, question, w)).into_iter().collect::<Result<_>>()?;
+    let best = answers.iter().flat_map(|(exists, lines, _)| lines.iter().map(move |(n, p)| (*n, p * exists)))
+        .max_by(|a, b| a.1.total_cmp(&b.1));
+    let source: Vec<&str> = text.split('\n').collect();
+    Ok(best.filter(|(_, score)| *score >= ABSENT)
+        .map(|(n, score)| (n, js::trim(source.get(n - 1).unwrap_or(&"")).to_string(), score)))
 }
 
 /// Per question, the line that answers it and how sure that is: per window one request with, per

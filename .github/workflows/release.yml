@@ -1,5 +1,5 @@
-# On a version tag (v0.8.0): build sessionkit for Apple Silicon and Intel Macs, attach both to a
-# GitHub release, and update the formula in Calq-dev/homebrew-tap.
+# On a version tag: build sessionkit for Apple Silicon, Intel Macs and Linux x86_64, attach to a
+# GitHub release. The legacy private tap steps run only in Calq-dev/sessionkit.
 #
 # The tap update needs the secret HOMEBREW_TAP_TOKEN: a token that may push to that repository.
 # Without it the release still happens, and the job prints the formula instead.
@@ -15,15 +15,18 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        target: [aarch64-apple-darwin, x86_64-apple-darwin]
+        include:
+          - { os: macos-latest, target: aarch64-apple-darwin }
+          - { os: macos-latest, target: x86_64-apple-darwin }
+          - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu }
     steps:
       - uses: actions/checkout@v4
       - run: rustup target add ${{ matrix.target }}
-      - run: cargo test --release
-        if: matrix.target == 'aarch64-apple-darwin'
+      - run: cargo test --release --locked
+        if: matrix.target != 'x86_64-apple-darwin'
       - run: cargo build --release --locked --target ${{ matrix.target }}
       - name: Package
         run: |
@@ -46,7 +49,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes "See CHANGELOG.md." sessionkit-*.tar.gz
-      - name: Write the formula
+      - name: Write the legacy private formula
+        if: github.repository == 'Calq-dev/sessionkit'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -59,7 +63,7 @@ jobs:
       - name: Update the tap
         env:
           TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-        if: env.TAP_TOKEN != ''
+        if: github.repository == 'Calq-dev/sessionkit' && env.TAP_TOKEN != ''
         run: |
           git clone "https://x-access-token:${TAP_TOKEN}@github.com/Calq-dev/homebrew-tap.git" tap
           mkdir -p tap/Formula && cp sessionkit.rb tap/Formula/sessionkit.rb

@@ -14,7 +14,7 @@
 use crate::Result;
 use crate::compact::{Message, PRESERVE_RECENT_MESSAGES, TRUNCATE_HEAD_CHARS, ToolUse, goal, read_segments};
 use crate::js;
-use crate::jev::{PRICE_PER_MILLION_TOKENS, ask_choice};
+use crate::jev::{price_per_million_tokens, ask_choice};
 use crate::start::{session_files};
 use regex::Regex;
 use serde_json::{Value, json};
@@ -365,7 +365,7 @@ fn measure(max: usize, verbose: bool) -> Result<()> {
     println!();
     println!("mass: blocks stay from the likeliest down until their probabilities add up to this.");
     println!("used kept: blocks the assistant used afterwards that stay. output cut: of all characters of these results.");
-    println!("Jev: ${}", js::fixed(tokens / 1e6 * PRICE_PER_MILLION_TOKENS, 4));
+    println!("Jev: ${}", js::fixed(tokens / 1e6 * price_per_million_tokens(), 4));
     Ok(())
 }
 
