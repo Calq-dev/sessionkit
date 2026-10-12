@@ -18,6 +18,12 @@ The steps the architect follows sit beside this file: `ONBOARD.md` and `AUDIT.md
 you need and put its whole text in the architect's prompt: the plugin folder lies outside the
 repository, where the architect may not be allowed to read.
 
+A `GLOSSARY.md` in the format of the domain-modeling skill (a term in bold, its definition, the
+words to avoid under `_Avoid_`; one at the root or one per context in `GLOSSARY-MAP.md`) is read
+with the memory: a change that names a concept by a word the glossary rules out gets the term
+quoted to its line, and a turn that names a concept the glossary lacks is asked to name it or
+add it. The hooks make no glossary; `record` adds a confirmed term to one that exists.
+
 ## onboard
 
 1. Look for `ARCHITECTURE.md` at the repository root. One with the line `<!-- sessionkit architect`

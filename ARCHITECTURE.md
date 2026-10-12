@@ -107,8 +107,11 @@ compaction when the SessionKit path fails or does not free sufficient context.
 ### Architect review
 
 An onboarded target repository stores its memory in `ARCHITECTURE.md` and
-`docs/adr/`. Hooks send the person's request, each eligible plan and edit, and
-the turn as a whole to the Rust classifier. A relevant request goes out with
+`docs/adr/`, and its language in `GLOSSARY.md` when it keeps one (the format of
+the domain-modeling skill; not required and never created by sessionkit). Hooks
+send the person's request, each eligible plan and edit, and the turn as a whole
+to the Rust classifier, which holds them against the memory, each decision
+record and each glossary term. A relevant request goes out with
 the rules that apply as context; a relevant edit adds a note to the coding
 agent's context with the rule quoted to the line; a turn that took a decision
 without recording it, or left a note unanswered, comes back as the next turn.
@@ -168,6 +171,7 @@ exposure but are not a comprehensive secret-detection guarantee.
 - [ADR 0005](docs/adr/0005-the-architect-is-a-plugin-agent-woken-by-jev.md): the coding agent initiates architect reviews after hook notifications.
 - [ADR 0006](docs/adr/0006-decision-provider-adapters-preserve-caller-policies.md): shared provider wire adapters preserve caller policies; non-Jev synthetic live checks passed; broader calibration pending.
 - [ADR 0007](docs/adr/0007-the-architect-speaks-at-four-moments-of-a-turn.md): the architect briefs before the turn, notes during it, reads the whole turn at its end and brings what is open back as the next turn; no veto.
+- [ADR 0008](docs/adr/0008-the-glossary-is-architectural-memory.md): a GLOSSARY.md in the domain-modeling skill's format is read as a third memory; misnamed terms are quoted to the line, a new term comes back at the end of the turn.
 
 ## Maintenance constraints
 

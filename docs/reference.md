@@ -394,6 +394,15 @@ change touches the architecture.
   questions. Each statement carries its standing: `[confirmed]` by a person, `[observed]` in the
   code, or `[inferred 0.6]`. Decisions go in `docs/adr/`, one short file each. The memory
   describes the system as it is now; the architect rewrites it instead of appending to it.
+- **The language**, when the repository has a `GLOSSARY.md` in the format of Matt Pocock's
+  domain-modeling skill: a term in bold, one or two sentences that say what it is, and the words
+  to avoid under `_Avoid_`; one file at the root, or one per context listed in
+  `GLOSSARY-MAP.md`. The terms go to Jev with the memory. A change that names a concept by a word
+  the glossary rules out gets the term quoted to its line in the note; a turn that names a
+  concept the glossary lacks, or gives one a second name, is asked to name it by a term the
+  glossary has or to put the new term to you. A term you confirm, the architect adds to the
+  glossary with `/sessionkit:architecture record`. Without a glossary nothing is asked about
+  language; the architect never creates one.
 - **The offer.** In a git repository without an architect, sessionkit asks once per session,
   after the first answer: *Onboard now*, *Not now* (asked again next session) or *Never for
   this project*, which is kept in `~/.config/sessionkit/architect.json`; delete the repository's

@@ -19,8 +19,13 @@
 // The plugin starts no agent: in auto mode the server-side classifier judges only calls a model
 // request asked for, and refuses a spawn from a hook.
 //
-// An architect the model starts is held to ARCHITECTURE.md and docs/adr/ by the tool.call hook
-// below, and its own changes are not checked.
+// A repository with a GLOSSARY.md (the format of the domain-modeling skill: a term, its
+// definition, the words to avoid for it) has its language watched the same way: a change that
+// names a concept by a word the glossary rules out gets the term quoted to its line, and a turn
+// that names a concept the glossary lacks is asked to add it or name it by a term it has.
+//
+// An architect the model starts is held to ARCHITECTURE.md, docs/adr/ and the glossaries by the
+// tool.call hook below, and its own changes are not checked.
 //
 // In a git repository without an onboarded memory, the first answer of a session is followed by
 // one question: onboard an architect now, not now (asked again next session), or never for this
@@ -55,6 +60,9 @@ function turnOf(loop) {
   return turns.get(key);
 }
 
+/** The glossary terms a check read the change as misnaming, as a clause of a note or a brief. */
+const misnamedClause = (check) => (check.misnamed?.length ? `; it names ${check.misnamed.join(", ")} by a word the glossary rules out` : "");
+
 /** The rules a check found, one line each, for a note or a brief. */
 const ruleLines = (check) => (check.rules ?? []).map((rule) => `\n- ${rule.file}:${rule.line}: ${rule.text}`).join("");
 
@@ -71,7 +79,7 @@ function changeOf(tool, event, result) {
 }
 
 /** May an architect write this file? Only its memory. */
-const allowed = (path) => /(^|\/)ARCHITECTURE\.md$/.test(path) || /(^|\/)docs\/adr\/[^/]+$/.test(path);
+const allowed = (path) => /(^|\/)(ARCHITECTURE|GLOSSARY|GLOSSARY-MAP)\.md$/.test(path) || /(^|\/)docs\/adr\/[^/]+$/.test(path);
 
 async function check($, input, timeoutMs = TIMEOUT_MS) {
   const stdin = JSON.stringify({ session_id: await $.session.id(), cwd: await $.session.cwd(), ...input });
@@ -105,7 +113,7 @@ export async function brief($, event, next, options) {
   if (!found.wake || options?.architect === "shadow") return next(event);
   const against = found.against?.length ? ` and may touch ${found.against.join(", ")}` : "";
   const text = `${PREFIX} (Jev): doing this touches the architecture in ARCHITECTURE.md: read as ${found.category} ` +
-    `(${Number(found.relevance).toFixed(2)})${against}. Keep to these rules, or put a change of them to the person ` +
+    `(${Number(found.relevance).toFixed(2)})${against}${misnamedClause(found)}. Keep to these rules, or put a change of them to the person ` +
     `before you make it:${ruleLines(found) || "\n- (see ARCHITECTURE.md and the records named above)"}` +
     Object.entries(found.against_text ?? {}).map(([file, text]) => `\n\n${file}:\n${text}`).join("");
   return next({ ...event, context: [...(event.context ?? []), text] });
@@ -133,6 +141,11 @@ export async function close($, turn, answer, options) {
       `${found.against?.length ? `, against ${found.against.join(", ")}` : ""}.${ruleLines(found)}\nIf it is intended, put it to the person ` +
       `and have ${ARCHITECT} record it with a prompt that starts with \`Record.\`; if not, undo it or keep the boundary.`);
   }
+  if (found.named) {
+    points.push(`This turn names a domain concept the glossary does not define, or gives one a second name ` +
+      `(${Number(found.new_term).toFixed(2)}). Name it by a term the glossary has, or put the new term to the person; ` +
+      `a term they confirm, ${ARCHITECT} adds to GLOSSARY.md with a prompt that starts with \`Record.\`.`);
+  }
   for (const note of open) points.push(`A note of this turn was not dealt with:\n${note.split("\n\n")[0]}`);
   if (points.length === 0) return;
   const text = `${PREFIX} (Jev): before this work is left, deal with the following; then go on.\n\n${points.join("\n\n")}`;
@@ -146,12 +159,12 @@ export async function close($, turn, answer, options) {
  */
 export async function notify($, loop, check) {
   const against = check.against?.length ? `; it may go against ${check.against.join(", ")}` : "";
-  const key = `${check.file}|${check.category}|${check.against ?? []}`;
+  const key = `${check.file}|${check.category}|${check.against ?? []}|${check.misnamed ?? []}`;
   if (noted.has(key)) return;
   noted.add(key);
   const size = check.files > 1 ? ` This turn has changed ${check.files} files so far.` : "";
   const text = `${PREFIX} (Jev): ${check.file ? `the change to ${check.file}` : "the plan"} may affect the architecture in ` +
-    `ARCHITECTURE.md: read as ${check.category} (${Number(check.relevance).toFixed(2)})${against}.${ruleLines(check)}\n` +
+    `ARCHITECTURE.md: read as ${check.category} (${Number(check.relevance).toFixed(2)})${against}${misnamedClause(check)}.${ruleLines(check)}\n` +
     `Check it before you go on, and judge it yourself first: you have the same model as the architect.${size} ` +
     `Start the agent ${ARCHITECT} in the background only for a large change (several modules, a new boundary, ownership ` +
     "or a contract) or when a reading without your own reasoning adds something: it sees the change and the memory, not " +
@@ -213,7 +226,7 @@ export const register = (on, options) => {
     on("tool.call", { tool }, async ($, event, next) => {
       const own = architects.has(event.agentId);
       if (own && tool !== "ExitPlanMode" && !allowed(event.file_path ?? "")) {
-        return { deny: "The architect writes only ARCHITECTURE.md and docs/adr/." };
+        return { deny: "The architect writes only ARCHITECTURE.md, GLOSSARY.md and docs/adr/." };
       }
       const result = await next(event);
       if (own || "deny" in result || result.isError) return result;

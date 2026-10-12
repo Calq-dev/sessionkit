@@ -26,6 +26,11 @@ pub const MEMORY: &str = "ARCHITECTURE.md";
 const MARKER: &str = "<!-- sessionkit architect";
 /// Decision records live beside the memory; the architect writes them, so they are not checked.
 const DECISIONS: &str = "docs/adr";
+/// The domain language, in the GLOSSARY.md format of the domain-modeling skill: a term in bold,
+/// its definition and the words to avoid for it. One at the root, or one per context listed in
+/// GLOSSARY-MAP.md. Neither is required; without one the language is not watched.
+const GLOSSARY: &str = "GLOSSARY.md";
+const GLOSSARY_MAP: &str = "GLOSSARY-MAP.md";
 /// A change makes an architectural decision at or above this (SESSIONKIT_ARCHITECT_DECIDE).
 const DECIDE_AT: f64 = 0.6;
 
@@ -66,6 +71,24 @@ pub struct Decision {
     pub text: String,
 }
 
+/// A term of the glossary: its canonical name, its definition, the words it rules out, and where
+/// it stands, so the note can quote it to the line without a find.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Term {
+    pub name: String,
+    pub definition: String,
+    pub avoid: Vec<String>,
+    pub file: String,
+    pub line: usize,
+}
+
+/// How a change uses one term of the glossary, each term held against the change on its own.
+pub const USES_OF_TERM: [(&str, &str); 3] = [
+    ("names_it", "The change calls this concept by the glossary's term, in identifiers, types, tables, messages or text."),
+    ("misnames_it", "The change names this concept with a word the glossary lists under Avoid, or with another word of its own."),
+    ("unrelated", "The change does not touch this concept."),
+];
+
 /// How a change relates to one recorded decision. Each record is held against the change on its
 /// own: the pair in the state, not the change against everything at once.
 pub const RELATIONS_TO_DECISION: [(&str, &str); 3] = [
@@ -75,18 +98,22 @@ pub const RELATIONS_TO_DECISION: [(&str, &str); 3] = [
 ];
 
 /// What the classifier read: a probability per category, per decision record a probability per
-/// relation, and the probability that the change makes an architectural decision of its own.
+/// relation, the probability that the change makes an architectural decision of its own, per
+/// glossary term a probability per use, and the probability that the change names a concept the
+/// glossary does not have.
 #[derive(Default)]
 pub struct Reading {
     pub categories: Map<String, Value>,
     pub decisions: Map<String, Value>,
     pub decision: f64,
+    pub terms: Map<String, Value>,
+    pub new_term: f64,
 }
 
 /// Scores a change against the memory and the decision records.
 pub trait Classifier {
     fn name(&self) -> String;
-    fn classify(&self, change: &Change, memory: &str, decisions: &[Decision]) -> Result<Reading>;
+    fn classify(&self, change: &Change, memory: &str, decisions: &[Decision], terms: &[Term]) -> Result<Reading>;
     /// Whether this classifier can also point at the line of a rule (Jev can; a command cannot).
     fn finds_lines(&self) -> bool {
         false
@@ -112,6 +139,61 @@ fn decisions_of(root: &Path) -> Vec<Decision> {
     }).collect()
 }
 
+/// The glossary files of a repository: the root GLOSSARY.md, or those GLOSSARY-MAP.md links to.
+fn glossaries_of(root: &Path) -> Vec<String> {
+    let map = std::fs::read_to_string(root.join(GLOSSARY_MAP)).unwrap_or_default();
+    let mut files: Vec<String> = map.match_indices("](").filter_map(|(at, _)| {
+        let rest = &map[at + 2..];
+        let link = &rest[..rest.find(')')?];
+        link.ends_with(GLOSSARY).then(|| link.trim_start_matches("./").to_string())
+    }).collect();
+    if files.is_empty() && root.join(GLOSSARY).exists() {
+        files.push(GLOSSARY.to_string());
+    }
+    files
+}
+
+/// The terms of one glossary: `**Term**:` opens one, the lines after it define it until a blank
+/// line or the next term, and `_Avoid_:` lists the words it rules out.
+pub fn terms_of(file: &str, text: &str) -> Vec<Term> {
+    let mut terms: Vec<Term> = Vec::new();
+    let mut open = false; // the last term still takes definition lines
+    for (i, raw) in text.lines().enumerate() {
+        let line = js::trim(raw);
+        if let Some(name) = line.strip_prefix("**").and_then(|l| l.strip_suffix("**:").or_else(|| l.strip_suffix("**"))) {
+            terms.push(Term { name: name.trim().to_string(), definition: String::new(), avoid: Vec::new(), file: file.to_string(), line: i + 1 });
+            open = true;
+            continue;
+        }
+        if line.is_empty() || line.starts_with('#') {
+            open = false;
+            continue;
+        }
+        let Some(term) = terms.last_mut().filter(|_| open) else { continue };
+        if let Some(list) = line.strip_prefix("_Avoid_:").or_else(|| line.strip_prefix("*Avoid*:")).or_else(|| line.strip_prefix("Avoid:")) {
+            term.avoid.extend(list.split(',').map(|w| w.trim().to_string()).filter(|w| !w.is_empty()));
+        } else {
+            if !term.definition.is_empty() {
+                term.definition.push(' ');
+            }
+            term.definition.push_str(line);
+        }
+    }
+    terms
+}
+
+/// Every term of every glossary of a repository.
+fn glossary_of(root: &Path) -> Vec<Term> {
+    glossaries_of(root).iter().flat_map(|file| {
+        std::fs::read_to_string(root.join(file)).map(|text| terms_of(file, &text)).unwrap_or_default()
+    }).collect()
+}
+
+/// A term as the state carries it.
+fn term_json(term: &Term) -> Value {
+    json!({"term": term.name, "definition": js::clip(&term.definition, 300), "avoid": term.avoid})
+}
+
 /// Room for two texts in one budget: each gets all it needs when both fit; otherwise the longer
 /// one is cut, but never below half.
 fn shares(a: usize, b: usize, budget: usize) -> (usize, usize) {
@@ -124,15 +206,19 @@ fn shares(a: usize, b: usize, budget: usize) -> (usize, usize) {
     }
 }
 
-fn state(change: &Change, memory: &str, decisions: &[Decision]) -> Value {
+fn state(change: &Change, memory: &str, decisions: &[Decision], terms: &[Term]) -> Value {
     let recorded: usize = decisions.iter().map(|d| js::len(&d.text)).sum();
-    let (change_room, reference_room) = shares(js::len(&change.text), js::len(memory) + recorded, STATE_CHARS);
-    let (memory_room, recorded_room) = shares(js::len(memory), recorded, reference_room);
+    // Terms are short and already clipped; they come off the top of the reference's room.
+    let glossary: Vec<Value> = terms.iter().map(term_json).collect();
+    let worded = js::len(&js::stringify(&json!(glossary)));
+    let (change_room, reference_room) = shares(js::len(&change.text), js::len(memory) + recorded + worded, STATE_CHARS);
+    let (memory_room, recorded_room) = shares(js::len(memory), recorded, reference_room.saturating_sub(worded));
     let each = recorded_room / decisions.len().max(1);
     json!({
         "change": {"kind": change.kind, "file": change.file, "diff": js::clip(&change.text, change_room)},
         "architecture": js::clip_middle(memory, memory_room),
         "decisions": decisions.iter().map(|d| json!({"file": d.file, "text": js::clip(&d.text, each)})).collect::<Vec<_>>(),
+        "glossary": glossary,
     })
 }
 
@@ -144,6 +230,10 @@ fn relation_criteria() -> Map<String, Value> {
     RELATIONS_TO_DECISION.iter().map(|(name, words)| (name.to_string(), json!(words))).collect()
 }
 
+fn use_criteria() -> Map<String, Value> {
+    USES_OF_TERM.iter().map(|(name, words)| (name.to_string(), json!(words))).collect()
+}
+
 struct Jev;
 
 impl Classifier for Jev {
@@ -151,7 +241,7 @@ impl Classifier for Jev {
         "jev".into()
     }
 
-    fn classify(&self, change: &Change, memory: &str, decisions: &[Decision]) -> Result<Reading> {
+    fn classify(&self, change: &Change, memory: &str, decisions: &[Decision], terms: &[Term]) -> Result<Reading> {
         let what = what_change_is(&change.kind);
         let mut questions = Map::new();
         questions.insert("category".into(), json!({
@@ -178,13 +268,34 @@ impl Classifier for Jev {
                 "criteria": relation_criteria(),
             }));
         }
-        let data = post(&json!({"model": model(), "state": state(change, memory, decisions), "questions": questions}))?;
+        for (i, term) in terms.iter().enumerate() {
+            questions.insert(format!("term:{}", term.name), json!({
+                "type": "choice",
+                "instructions": format!("How does `change` use the concept `glossary[{i}]` defines? {what} Judge the names the change \
+                    itself introduces or uses, not the code around it."),
+                "criteria": use_criteria(),
+            }));
+        }
+        if !terms.is_empty() {
+            questions.insert("new_term".into(), json!({
+                "type": "noul",
+                "instructions": format!("Does `change` introduce a domain concept of this project that `glossary` does not define, \
+                    or a second name for one it does? {what} General programming concepts do not count."),
+                "criteria": {
+                    "true": "The change names a concept of this project's domain that no term in `glossary` covers, or gives a covered one a new name.",
+                    "false": "Every domain concept the change names has its term in `glossary`, or the change names none.",
+                },
+            }));
+        }
+        let data = post(&json!({"model": model(), "state": state(change, memory, decisions, terms), "questions": questions}))?;
         let probabilities = |key: &str| data.get("answers").and_then(|a| a.get(key)).and_then(|a| a.get("probabilities"))
             .and_then(Value::as_object).cloned().unwrap_or_default();
         Ok(Reading {
             categories: probabilities("category"),
             decisions: decisions.iter().map(|d| (d.file.clone(), Value::Object(probabilities(&d.file)))).collect(),
             decision: data["answers"]["decision"]["noul"].as_f64().unwrap_or(0.0),
+            terms: terms.iter().map(|t| (t.name.clone(), Value::Object(probabilities(&format!("term:{}", t.name))))).collect(),
+            new_term: data["answers"]["new_term"]["noul"].as_f64().unwrap_or(0.0),
         })
     }
 
@@ -202,9 +313,9 @@ fn what_change_is(kind: &str) -> &'static str {
     }
 }
 
-/// Any program that reads {change, architecture, decisions, categories, relations} as JSON on
-/// stdin and prints {"probabilities": {category: p}, "decisions": {file: {relation: p}}, "decision": p};
-/// all but the first may be left out.
+/// Any program that reads {change, architecture, decisions, glossary, categories, relations, uses}
+/// as JSON on stdin and prints {"probabilities": {category: p}, "decisions": {file: {relation: p}},
+/// "decision": p, "terms": {term: {use: p}}, "new_term": p}; all but the first may be left out.
 struct Command(String);
 
 impl Classifier for Command {
@@ -212,10 +323,11 @@ impl Classifier for Command {
         self.0.clone()
     }
 
-    fn classify(&self, change: &Change, memory: &str, decisions: &[Decision]) -> Result<Reading> {
-        let mut input = state(change, memory, decisions);
+    fn classify(&self, change: &Change, memory: &str, decisions: &[Decision], terms: &[Term]) -> Result<Reading> {
+        let mut input = state(change, memory, decisions, terms);
         input["categories"] = category_criteria().into();
         input["relations"] = relation_criteria().into();
+        input["uses"] = use_criteria().into();
         let mut child = std::process::Command::new(&self.0).stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped()).spawn().map_err(|e| format!("{}: {e}", self.0))?;
         child.stdin.take().map(|mut stdin| stdin.write_all(js::stringify(&input).as_bytes()));
@@ -223,7 +335,10 @@ impl Classifier for Command {
         let answer = js::parse(js::trim(&String::from_utf8_lossy(&output.stdout)))
             .ok_or_else(|| format!("{}: no JSON on stdout", self.0))?;
         let part = |key: &str| answer.get(key).and_then(Value::as_object).cloned().unwrap_or_default();
-        Ok(Reading { categories: part("probabilities"), decisions: part("decisions"), decision: answer["decision"].as_f64().unwrap_or(0.0) })
+        Ok(Reading {
+            categories: part("probabilities"), decisions: part("decisions"), decision: answer["decision"].as_f64().unwrap_or(0.0),
+            terms: part("terms"), new_term: answer["new_term"].as_f64().unwrap_or(0.0),
+        })
     }
 }
 
@@ -234,6 +349,20 @@ fn against(decisions: &Map<String, Value>) -> Vec<String> {
         RELATIONS_TO_DECISION.iter().map(|(name, _)| *name).max_by(|a, b| p(a).total_cmp(&p(b))) == Some("goes_against")
             && p("goes_against") > 0.0
     }).map(|(file, _)| file.clone()).collect()
+}
+
+/// The terms the change most likely misnames: those where that is the top use.
+fn misnamed(terms: &Map<String, Value>) -> Vec<String> {
+    terms.iter().filter(|(_, uses)| {
+        let p = |name: &str| uses.get(name).and_then(Value::as_f64).unwrap_or(0.0);
+        USES_OF_TERM.iter().map(|(name, _)| *name).max_by(|a, b| p(a).total_cmp(&p(b))) == Some("misnames_it") && p("misnames_it") > 0.0
+    }).map(|(name, _)| name.clone()).collect()
+}
+
+/// A term as the note quotes it: the glossary's line, the definition and the words ruled out.
+fn term_rule(term: &Term) -> Value {
+    let avoid = if term.avoid.is_empty() { String::new() } else { format!(" Avoid: {}.", term.avoid.join(", ")) };
+    json!({"file": term.file, "line": term.line, "text": js::clip(&format!("{}: {}{avoid}", term.name, term.definition), 300)})
 }
 
 /// The repository root and the memory, from the nearest ARCHITECTURE.md that onboarding wrote.
@@ -338,9 +467,11 @@ fn addressed_of(notes: &[String], answer: &str) -> Result<Vec<f64>> {
 /// For the plugin's hooks: input {session_id, cwd, kind (plan, edit, create, prompt, turn), file,
 /// change, and for a turn also answer (what the agent said) and notes (the architect's notes of
 /// that turn)}; answers {wake, relevance, category, decision, probabilities, root, against,
-/// against_text, rules, addressed} or {wake: false, reason}. A prompt or a turn is held against
-/// the memory like an edit; `decision` says whether it makes an architectural decision of its own
-/// and `addressed` whether the answer dealt with each note.
+/// against_text, misnamed, new_term, named, rules, addressed} or {wake: false, reason}. A prompt
+/// or a turn is held against the memory like an edit; `decision` says whether it makes an
+/// architectural decision of its own, `misnamed` which glossary terms it names by a word the
+/// glossary rules out, `named` whether it names a concept the glossary lacks, and `addressed`
+/// whether the answer dealt with each note.
 pub fn check(input: &Value, classifier: Option<&dyn Classifier>, wake_at: f64) -> Result<Value> {
     let file = js::str_of(input, "file");
     let start = if file.is_empty() { PathBuf::from(js::str_of(input, "cwd")) } else { PathBuf::from(file).parent().map(Path::to_path_buf).unwrap_or_default() };
@@ -348,7 +479,8 @@ pub fn check(input: &Value, classifier: Option<&dyn Classifier>, wake_at: f64) -
         return Ok(json!({"wake": false, "reason": "no architecture memory"}));
     };
     let relative = Path::new(file).strip_prefix(&root).map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|_| file.to_string());
-    if relative == MEMORY || relative.starts_with(&format!("{DECISIONS}/")) {
+    let glossary_file = relative == GLOSSARY_MAP || relative == GLOSSARY || relative.ends_with(&format!("/{GLOSSARY}"));
+    if relative == MEMORY || relative.starts_with(&format!("{DECISIONS}/")) || glossary_file {
         return Ok(json!({"wake": false, "reason": "architecture memory"}));
     }
     let notes: Vec<String> = input["notes"].as_array().into_iter().flatten().filter_map(Value::as_str).map(String::from).collect();
@@ -367,15 +499,19 @@ pub fn check(input: &Value, classifier: Option<&dyn Classifier>, wake_at: f64) -
         return Ok(json!({"wake": false, "reason": "empty change", "addressed": addressed}));
     }
     let decisions = decisions_of(&root);
-    let reading = classifier.classify(&change, &memory, &decisions)?;
+    let terms = glossary_of(&root);
+    let reading = classifier.classify(&change, &memory, &decisions, &terms)?;
     let probabilities = reading.categories;
     let (relevance, category) = relevance(&probabilities);
     let against = against(&reading.decisions);
     let decided = reading.decision >= setting("ARCHITECT_DECIDE", DECIDE_AT);
-    let wake = relevance >= wake_at || !against.is_empty() || decided;
+    let misnamed = misnamed(&reading.terms);
+    let named = !terms.is_empty() && reading.new_term >= setting("ARCHITECT_DECIDE", DECIDE_AT);
+    let wake = relevance >= wake_at || !against.is_empty() || decided || !misnamed.is_empty() || named;
     let against_text: Map<String, Value> = decisions.iter().filter(|d| against.contains(&d.file))
         .map(|d| (d.file.clone(), json!(js::clip(js::trim(&d.text), RECORD_CHARS)))).collect();
-    let rules = if wake && classifier.finds_lines() { rules_of(&memory, &change, &category, &decisions, &against) } else { Vec::new() };
+    let mut rules = if wake && classifier.finds_lines() { rules_of(&memory, &change, &category, &decisions, &against) } else { Vec::new() };
+    rules.extend(terms.iter().filter(|t| misnamed.contains(&t.name)).map(term_rule));
     Ok(json!({
         "wake": wake,
         "relevance": num(relevance),
@@ -389,6 +525,10 @@ pub fn check(input: &Value, classifier: Option<&dyn Classifier>, wake_at: f64) -
         "file": change.file,
         "classifier": classifier.name(),
         "against_text": against_text,
+        "misnamed": misnamed,
+        "terms": reading.terms,
+        "new_term": num(reading.new_term),
+        "named": named,
         "rules": rules,
         "addressed": addressed,
     }))
@@ -409,6 +549,8 @@ pub fn check_main(input: &Value) -> Result<Value> {
             "decisions": answer["decisions"],
             "relevance": answer["relevance"],
             "decision": answer["decision"],
+            "terms": answer["terms"],
+            "new_term": answer["new_term"],
             "wake": answer["wake"],
         }))?;
     }
@@ -640,11 +782,17 @@ mod tests {
         relations: Map<String, Value>,
         seen: RefCell<Vec<(String, String)>>,
         decision: f64,
+        uses: Map<String, Value>,
+        new_term: f64,
+        terms_seen: RefCell<Vec<Term>>,
     }
 
     impl Fake {
         fn new(answer: Value) -> Fake {
-            Fake { answer: answer.as_object().cloned().unwrap(), relations: Map::new(), seen: RefCell::new(Vec::new()), decision: 0.0 }
+            Fake {
+                answer: answer.as_object().cloned().unwrap(), relations: Map::new(), seen: RefCell::new(Vec::new()), decision: 0.0,
+                uses: Map::new(), new_term: 0.0, terms_seen: RefCell::new(Vec::new()),
+            }
         }
     }
 
@@ -652,11 +800,13 @@ mod tests {
         fn name(&self) -> String {
             "fake".into()
         }
-        fn classify(&self, change: &Change, memory: &str, decisions: &[Decision]) -> Result<Reading> {
+        fn classify(&self, change: &Change, memory: &str, decisions: &[Decision], terms: &[Term]) -> Result<Reading> {
             self.seen.borrow_mut().push((change.file.clone(), memory.to_string()));
+            *self.terms_seen.borrow_mut() = terms.to_vec();
             let decisions = decisions.iter().map(|d| (d.file.clone(), self.relations.get(&d.file).cloned()
                 .unwrap_or(json!({"unrelated": 1.0})))).collect();
-            Ok(Reading { categories: self.answer.clone(), decisions, decision: self.decision })
+            let terms = terms.iter().map(|t| (t.name.clone(), self.uses.get(&t.name).cloned().unwrap_or(json!({"unrelated": 1.0})))).collect();
+            Ok(Reading { categories: self.answer.clone(), decisions, decision: self.decision, terms, new_term: self.new_term })
         }
     }
 
@@ -747,6 +897,67 @@ mod tests {
         assert_eq!(check(&empty, Some(&fake), WAKE_AT).unwrap()["reason"], "empty change");
     }
 
+    const GLOSSARY_TEXT: &str = "# Shop\n\nWhat the shop sells and bills.\n\n## Language\n\n\
+        **Customer**:\nA person or organization that places orders.\n_Avoid_: Client, buyer, account\n\n\
+        **Invoice**:\nA request for payment sent to a customer\nafter delivery.\n_Avoid_: Bill\n\n## Notes\n\nNot a term.\n";
+
+    #[test]
+    fn a_glossary_is_read_term_by_term_with_its_lines_and_the_words_to_avoid() {
+        let terms = terms_of("GLOSSARY.md", GLOSSARY_TEXT);
+        assert_eq!(terms.len(), 2);
+        assert_eq!(terms[0].name, "Customer");
+        assert_eq!(terms[0].line, 7);
+        assert_eq!(terms[0].avoid, ["Client", "buyer", "account"]);
+        assert_eq!(terms[1].definition, "A request for payment sent to a customer after delivery.");
+        assert_eq!(terms[1].avoid, ["Bill"]);
+    }
+
+    #[test]
+    fn a_misnamed_term_wakes_the_architect_with_the_glossary_line() {
+        let root = repository(MEMORY_TEXT);
+        std::fs::write(root.join(GLOSSARY), GLOSSARY_TEXT).unwrap();
+        let mut fake = Fake::new(json!({"local": 0.9, "boundary": 0.1}));
+        fake.uses.insert("Invoice".into(), json!({"names_it": 0.1, "misnames_it": 0.8, "unrelated": 0.1}));
+        let answer = check(&edit(&root, "src/checkout/bill.rs", "+pub struct Bill { total: Money }"), Some(&fake), WAKE_AT).unwrap();
+        assert_eq!(answer["wake"], true);
+        assert_eq!(answer["misnamed"], json!(["Invoice"]));
+        assert_eq!(answer["named"], false);
+        assert_eq!(answer["rules"][0]["file"], "GLOSSARY.md");
+        assert_eq!(answer["rules"][0]["line"], 11);
+        assert_eq!(answer["rules"][0]["text"], "Invoice: A request for payment sent to a customer after delivery. Avoid: Bill.");
+        assert_eq!(fake.terms_seen.borrow().len(), 2);
+    }
+
+    #[test]
+    fn a_concept_the_glossary_lacks_wakes_the_architect_and_the_glossaries_of_a_map_are_read() {
+        let root = repository(MEMORY_TEXT);
+        std::fs::create_dir_all(root.join("src/billing")).unwrap();
+        std::fs::write(root.join("src/billing/GLOSSARY.md"), GLOSSARY_TEXT).unwrap();
+        std::fs::write(root.join(GLOSSARY_MAP), "# Glossary Map\n\n- [Billing](./src/billing/GLOSSARY.md): bills\n").unwrap();
+        let mut fake = Fake::new(json!({"local": 0.9, "boundary": 0.1}));
+        fake.new_term = 0.9;
+        let answer = check(&edit(&root, "src/checkout/total.rs", "+pub struct Voucher"), Some(&fake), WAKE_AT).unwrap();
+        assert_eq!(answer["wake"], true);
+        assert_eq!(answer["named"], true);
+        assert_eq!(answer["misnamed"], json!([]));
+        assert_eq!(fake.terms_seen.borrow()[0].file, "src/billing/GLOSSARY.md");
+        // Without a glossary the question is not asked, and the answer does not count.
+        let bare = repository(MEMORY_TEXT);
+        let answer = check(&edit(&bare, "src/checkout/total.rs", "+pub struct Voucher"), Some(&fake), WAKE_AT).unwrap();
+        assert_eq!(answer["named"], false);
+        assert_eq!(answer["wake"], false);
+    }
+
+    #[test]
+    fn edits_of_the_glossary_are_not_checked() {
+        let root = repository(MEMORY_TEXT);
+        let fake = Fake::new(json!({"local": 0.0, "boundary": 1.0}));
+        for file in ["GLOSSARY.md", "GLOSSARY-MAP.md", "src/billing/GLOSSARY.md"] {
+            let answer = check(&edit(&root, file, "+**Bill**:"), Some(&fake), WAKE_AT).unwrap();
+            assert_eq!(answer["reason"], "architecture memory", "{file}");
+        }
+    }
+
     #[test]
     fn a_rule_is_quoted_to_the_end_of_its_sentence() {
         let text = "# Billing\n\nInvoices are created only by billing. Other modules ask billing through\nits gateway.\nA second paragraph.\n\n- a list";
@@ -814,7 +1025,7 @@ mod tests {
     fn decision_records_share_the_state_with_the_memory() {
         let decisions = [Decision { file: "docs/adr/0001.md".into(), text: "d".repeat(100) }];
         let change = Change { kind: "edit".into(), file: "a.rs".into(), text: "+x".into() };
-        let state = state(&change, "memory", &decisions);
+        let state = state(&change, "memory", &decisions, &[]);
         assert_eq!(state["decisions"][0]["file"], "docs/adr/0001.md");
         assert_eq!(state["decisions"][0]["text"].as_str().unwrap().len(), 100);
     }
