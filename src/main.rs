@@ -21,6 +21,7 @@ mod awareness;
 mod cache;
 mod claude;
 mod compact;
+mod decision;
 mod grep;
 mod jev;
 mod js;

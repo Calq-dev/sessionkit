@@ -22,7 +22,7 @@
 use crate::transcript::Entry as TranscriptEntry;
 use crate::Result;
 use crate::js;
-use crate::jev::{PRICE_PER_MILLION_TOKENS, model, post};
+use crate::jev::{price_per_million_tokens, model, post};
 use crate::start::{session_files};
 use crate::usage::projects_dir;
 use regex::Regex;
@@ -578,7 +578,7 @@ impl Compaction {
         format!("{}% smaller; {}; state ~{} tokens ({}) in {} request(s), ${}",
             js::round(self.reduction() * 100.0), if parts.is_empty() { "no tool calls".into() } else { parts.join(", ") },
             self.state_tokens, if self.stage.is_empty() { "none" } else { self.stage }, self.requests,
-            js::fixed(self.tokens / 1e6 * PRICE_PER_MILLION_TOKENS, 4))
+            js::fixed(self.tokens / 1e6 * price_per_million_tokens(), 4))
     }
 }
 
@@ -1034,7 +1034,7 @@ fn run_dataset(argv: &[String]) -> Result<()> {
         let result = compact(&messages[..at])?;
         // How far back each call sits, in messages: the free rule to beat is that recent work comes back.
         let age: HashMap<&str, usize> = messages[..at].iter().enumerate().flat_map(|(i, m)| m.uses.iter().map(move |u| (u.id.as_str(), at - i))).collect();
-        cost += result.tokens / 1e6 * PRICE_PER_MILLION_TOKENS;
+        cost += result.tokens / 1e6 * price_per_million_tokens();
         for (_, use_id, _, d) in &result.decisions {
             let Some(label) = cut["reads"].get(use_id).and_then(Value::as_str).and_then(label_of) else { continue };
             if d.action != Action::Pinned {

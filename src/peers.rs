@@ -15,7 +15,7 @@ use crate::claude::{minutes, tokens, usd};
 use crate::js;
 use crate::next::transcript_of;
 use crate::auth::key_at_hand;
-use crate::jev::{PRICE_PER_MILLION_TOKENS, ask_nouls};
+use crate::jev::{price_per_million_tokens, ask_nouls};
 use crate::start::{read_session, session_card};
 use crate::usage::home;
 use serde_json::{Value, json};
@@ -196,7 +196,7 @@ fn render(peers: &[Peer], fits: &[Option<f64>], task: &str, here: &str, used: f6
         }
         None => out.push("No idle, warm session fits this task.".into()),
     }
-    out.push(format!("Jev: ${}", js::fixed(used / 1e6 * PRICE_PER_MILLION_TOKENS, 4)));
+    out.push(format!("Jev: ${}", js::fixed(used / 1e6 * price_per_million_tokens(), 4)));
     out.join("\n")
 }
 

@@ -14,12 +14,22 @@ const CONCURRENCY: usize = 6;
 
 /// SESSIONKIT_MODEL, or JEV_START_MODEL from before the rename; jev-latest by default.
 pub fn model() -> String {
-    std::env::var("SESSIONKIT_MODEL").or_else(|_| std::env::var("JEV_START_MODEL")).ok()
-        .filter(|model| !model.is_empty()).unwrap_or_else(|| "jev-latest".into())
+    crate::decision::Provider::selected().map(|p| p.model()).unwrap_or_else(|_| "invalid-provider".into())
 }
 
 pub const CHARS_PER_TOKEN: f64 = 3.5; // measured 3.76 on a real run; lower, so the estimate stays an upper bound
-pub const PRICE_PER_MILLION_TOKENS: f64 = 0.042;
+/// Research estimates, not billing guarantees. Override for a selected model.
+pub fn price_per_million_tokens() -> f64 {
+    if let Ok(value) = std::env::var("SESSIONKIT_PRICE_PER_MILLION") {
+        return value.parse::<f64>().ok().filter(|p| p.is_finite() && *p >= 0.0).unwrap_or(f64::NAN);
+    }
+    match crate::decision::Provider::selected() {
+        Ok(crate::decision::Provider::Jev | crate::decision::Provider::OpenRouter) => 0.042,
+        Ok(crate::decision::Provider::Decisions) => 0.10,
+        Ok(crate::decision::Provider::Clef) => if model() == "clef-flash" { 0.09 } else { 0.24 },
+        Err(_) => f64::NAN,
+    }
+}
 
 /// While estimating, nothing goes to TypeSafe: every request is counted and gets a neutral
 /// answer (0.5 for a Noul, an even spread for a Choice). Branches that depend on a score
@@ -40,7 +50,7 @@ pub fn start_estimate() {
 pub fn stop_estimate() -> Estimate {
     let (chars, requests) = ESTIMATE.lock().unwrap().take().unwrap_or((0, 0));
     let tokens = (chars as f64 / CHARS_PER_TOKEN).ceil();
-    Estimate { chars, requests, tokens, cost_usd: (tokens / 1e6) * PRICE_PER_MILLION_TOKENS }
+    Estimate { chars, requests, tokens, cost_usd: (tokens / 1e6) * price_per_million_tokens() }
 }
 
 fn neutral_response(body: &Value, chars: usize) -> Value {
@@ -93,7 +103,9 @@ fn retry_after(response: &ureq::http::Response<ureq::Body>) -> Option<Duration> 
 /// One System One call, with the default retry policy of TypeSafe's SDKs: two retries with
 /// backoff and jitter, or the server's Retry-After when it sends one.
 pub fn post(body: &Value) -> Result<Value> {
-    let text = js::stringify(body);
+    let provider = crate::decision::Provider::selected()?;
+    let wire = provider.body(body)?;
+    let text = js::stringify(&wire);
     {
         let mut estimate = ESTIMATE.lock().unwrap();
         if let Some((chars, requests)) = estimate.as_mut() {
@@ -103,10 +115,11 @@ pub fn post(body: &Value) -> Result<Value> {
             return Ok(neutral_response(body, size));
         }
     }
+    let endpoint = if provider == crate::decision::Provider::Jev { api() } else { provider.endpoint(body["model"].as_str().unwrap_or(""))? };
     let mut attempt = 0;
     loop {
-        let (api_key, source) = key()?;
-        let sent = AGENT.post(api()).header("Authorization", &format!("Bearer {api_key}"))
+        let (api_key, source) = if provider == crate::decision::Provider::Jev { key()? } else { (provider.key()?, KeySource::Environment) };
+        let sent = AGENT.post(&endpoint).header("Authorization", &format!("Bearer {api_key}"))
             .header("Content-Type", "application/json").send(text.as_str());
         let mut response = match sent {
             Ok(response) => response,
@@ -123,7 +136,8 @@ pub fn post(body: &Value) -> Result<Value> {
         let wait = retry_after(&response);
         let reply = response.body_mut().read_to_string().map_err(|error| error.to_string())?;
         if (200..300).contains(&status) {
-            return js::parse(&reply).ok_or_else(|| format!("TypeSafe {status}: not JSON: {}", js::head(&reply, 200)));
+            let data = js::parse(&reply).ok_or_else(|| format!("{} {status}: invalid JSON", provider.name()))?;
+            return provider.normalize(data, body);
         }
         if status == 401 && source == KeySource::Keychain && !can_refresh() {
             return Err("The stored TypeSafe key was refused. Run sessionkit auth login to replace it, or set TYPESAFE_API_KEY.".into());
@@ -134,12 +148,12 @@ pub fn post(body: &Value) -> Result<Value> {
             attempt += 1;
             continue;
         }
-        if attempt < 2 && retryable(status) {
+        if attempt < 2 && retryable(status) && !reply.contains("insufficient_quota") {
             std::thread::sleep(wait.unwrap_or_else(|| backoff(attempt)));
             attempt += 1;
             continue;
         }
-        return Err(format!("TypeSafe {status}: {}", js::head(&reply, 200)));
+        return Err(format!("{} HTTP {status}; check credentials, quota and selected model.", provider.name()));
     }
 }
 

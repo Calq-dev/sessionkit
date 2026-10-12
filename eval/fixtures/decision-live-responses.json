@@ -1,0 +1,32 @@
+{
+  "provenance": "Recorded from paid live calls using synthetic upload text, with user approval. No project source or credentials.",
+  "request": {
+    "model": "fixture",
+    "state": {"text": "The upload function retries failed uploads twice, then stops. It never deletes files."},
+    "questions": {
+      "retries": {"type": "noul", "instructions": "Does the upload function retry failed uploads?", "criteria": {"true": "It retries.", "false": "It does not retry."}},
+      "action": {"type": "choice", "instructions": "What does the function do when an upload fails?", "criteria": {"retry": "Retries the upload.", "delete": "Deletes files."}}
+    }
+  },
+  "clef": {
+    "result": {
+      "model": "clef",
+      "answers": {
+        "retries": {"type": "noul", "noul": 0.9764},
+        "action": {"type": "choice", "choice": "retry", "probabilities": {"retry": 0.9967, "delete": 0.0033}, "confidence": 0.9868}
+      },
+      "usage": {"input_tokens": 224, "output_tokens": 0}
+    },
+    "success": true,
+    "errors": [],
+    "messages": []
+  },
+  "decisions": {
+    "model": "gpt-6-luna",
+    "answers": [
+      {"type": "predicate", "name": "retries", "probability": 1.0},
+      {"type": "choice", "name": "action", "choice": "retry", "probabilities": [{"value": "retry", "probability": 1.0}, {"value": "delete", "probability": 0.0}], "confidence": 1.0}
+    ],
+    "usage": {"input_tokens": 304, "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 0}, "output_tokens": 0, "output_tokens_details": {"reasoning_tokens": 0}, "total_tokens": 304}
+  }
+}

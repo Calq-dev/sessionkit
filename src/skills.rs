@@ -17,7 +17,7 @@
 use crate::Result;
 use crate::js;
 use crate::measure::Random;
-use crate::jev::{PRICE_PER_MILLION_TOKENS, model, post, start_estimate, stop_estimate};
+use crate::jev::{price_per_million_tokens, model, post, start_estimate, stop_estimate};
 use crate::start::{confirm_above, read_session, session_files};
 use crate::usage::home;
 use regex::Regex;
@@ -583,7 +583,7 @@ pub fn skills_main(argv: &[String]) -> Result<()> {
     let judged = candidates.len();
     let (candidates, tokens) = evaluate(&steps, &vectors, candidates, &questions)?;
     eprint!("sessionkit: {} Jev tokens, about ${}; {} groups joined as one task\n", js::grouped(tokens),
-        js::fixed((tokens / 1e6) * PRICE_PER_MILLION_TOKENS, 4), judged - candidates.len());
+        js::fixed((tokens / 1e6) * price_per_million_tokens(), 4), judged - candidates.len());
     if options.measure {
         // Two halves of one group are the same task; two groups at the top are, mostly, not.
         let top: Vec<&Candidate> = candidates.iter().filter(|c| !c.plant && c.judged.as_ref().is_some_and(|j| j.task >= MERGE_GATE)).collect();

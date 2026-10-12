@@ -411,7 +411,7 @@ pub fn measure_main(argv: &[String]) -> Result<()> {
     let Measured { turns, routes } = measure_all(&sessions, cuts, routes, &mut Random { seed })?;
     let tokens = turns.1 + routes.1;
     let run = js::iso(js::now());
-    let cost_usd = (tokens / 1e6) * 0.042;
+    let cost_usd = (tokens / 1e6) * crate::jev::price_per_million_tokens();
     let result = json!({
         "run": run,
         "seed": num(seed),

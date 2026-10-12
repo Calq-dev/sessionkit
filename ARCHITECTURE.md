@@ -1,74 +1,202 @@
-<!-- sessionkit architect: baseline bc2d198 2026-10-03 -->
+<!-- sessionkit architect: baseline pending after public history reset -->
 # Architecture
 
-## System shape
-One Rust binary (`sessionkit`, `src/main.rs` dispatches subcommands, no library crate) plus a Claude Code plugin of JS function hooks (`plugin/`) that is embedded in the binary and written out by `sessionkit setup`. [observed]
+SessionKit is a Rust command-line application with an embedded Claude Code
+plugin. Claude Code is the primary integration; Codex and jcode currently have
+context-launch support rather than equivalent plugin integrations.
 
-Rust modules (`src/`):
-- `start` - choose context from earlier sessions with Jev and start claude/codex/jcode (largest module, 1594 lines). [observed]
-- `usage` - local, free token and cost analysis of transcripts. [observed]
-- `pricing` - built-in price table (ADR 0004). [observed]
-- `cache` - prompt-cache cost and warmth arithmetic over transcripts. [observed]
-- `transcript` - format of a transcript entry; not where transcripts are found (ADR 0003). [observed]
-- `claude` - status line and the settings-file hooks (`hook session-start|prompt|architect-check`), the wiring into Claude Code. [observed]
-- `next`, `peers` - close a cold session into a fresh one; list running sessions and fit a task to a warm one. [observed]
-- `compact`, `trim` - compaction without summary; measurement of cutting large tool results. [observed]
-- `skills`, `measure` - find repeated work; measure `start`'s selection. [observed]
-- `ask`, `grep/` - ask about a file; find code by asking Jev (`grep/` is a jevgrep port, with its own Jev client, ADR 0001). [observed]
-- `jev` - the shared System One client (one request, batch, Choice, estimate mode). `auth` - TypeSafe key from env, Keychain or 1Password. [observed]
-- `architect` - classifier that decides whether a change is architectural, and hands the plugin the text of each decision record it goes against (ADR 0005). [observed]
-- `js` - small helpers for `serde_json::Value` access, used everywhere. `setup` - installs status line, hooks, skill and plugin into `~/.claude`. [observed]
+This document describes implementation boundaries and maintenance constraints.
+Architectural decisions are recorded separately in [docs/adr/](docs/adr/).
+The public history was reset during documentation sanitization. A new audit
+baseline must be established against the current public history before using
+commit-based architecture comparisons.
 
-Plugin (`plugin/`): `hooks/index.js` registers the function hooks (`compact`, `fold`, `read`, `edit`, `effort`, `prompt`, `agent`, `repeat`, `architect`; `waiting.js` is shared); `agents/architect.md`, `skills/architecture`, `output-styles/robot.md`; `.claude-plugin/` manifests. `eval/` holds measurement scripts; `packaging/homebrew` and `.github/workflows/release.yml` build and publish via a Homebrew tap. [observed]
+## System overview
 
-## Ownership
-- Transcript entry format: `transcript`. Locating transcripts: four functions in four modules (ADR 0003). [observed]
-- Jev requests: `jev` for everything except `grep/`, which owns its own client and policy (ADR 0001). [observed]
-- TypeSafe key and its storage: `auth`. [observed]
-- Prices: `pricing`. [observed]
-- Persistent state: files only. `~/.cache/sessionkit` (`claude::cache_dir`: ack files, handoffs, `architect-checks.jsonl`), the macOS Keychain for the key, `~/.claude` for what `setup` writes. No database, no server. [observed]
-- Architect memory: `ARCHITECTURE.md` and `docs/adr/` in the target repository, no state file (ADR 0005). [observed]
-- Plugin hooks decide in JS and call the binary (`sessionkit hook ...`, `compact`, `ask`) for anything needing Jev or transcripts; JS never calls Jev directly. [confirmed]
+```text
+Claude Code
+  ├── Plugin function hooks and agent tools
+  │     └── SessionKit CLI
+  └── Settings hooks and status line
+        └── SessionKit CLI
 
-## Dependency rules
-- Leaves: `js`, `auth`, `pricing`, `transcript`, `grep/source`. `jev` depends only on `auth`, `js`. [observed]
-- `usage` is the base for analysis: `start`, `compact`, `next`, `measure`, `peers`, `skills` depend on it. [observed]
-- `trim` -> `compact` -> `start`; `skills` -> `measure` -> `start`; `ask` -> `grep::fs`. [observed]
-- Every Jev or transcript need of plugin JS goes through the `sessionkit` CLI. [confirmed]
-- A new Jev-using command uses `jev::post` or `ask_choice`; `grep/` is the only exception. [confirmed]
-- Platform: macOS-only (Keychain, `ps`, Homebrew) is a current limit; new code should avoid deepening it. [confirmed]
-- `eval/` is a measurement workspace outside these rules. [confirmed]
-- Plugin modules import only each other (`compact`, `fold`, `prompt` share `waiting`/`compact`); the plugin reaches Rust only through the CLI. [observed]
-- Rust side keeps no dependency on the plugin's JS except embedding it in `setup`. [observed]
+SessionKit CLI
+  ├── Local transcript and usage analysis
+  ├── Context selection and compaction
+  ├── Code search and file questions
+  ├── Architecture-change classification
+  ├── Credential and filesystem access
+  └── TypeSafe / Jev requests where required
+```
 
-## Principles
-- Jev selects and judges; it never writes or summarizes; kept text stays verbatim. [observed, README]
-- Commands that need no key run with no network (`usage`, status line, hooks). [observed, README]
-- Architect advice never blocks; only decision or drift asks the person (ADR 0005). [observed]
-- Plugin hooks never spawn agents (auto mode refuses it); a hook appends a note and the model in the loop starts `sessionkit:architect`. [confirmed]
-- Two similar things stay separate when they differ in policy, not just in code (ADR 0001-0003). [observed]
+The application has one binary entry point, `src/main.rs`, and no separate
+library crate. Plugin modules run inside Claude Code's function-hook environment
+and access host services through the mods API. Paid classification and search
+requests are implemented in Rust, not duplicated in JavaScript.
 
-## Decisions
-- [0001](docs/adr/0001-grep-keeps-its-own-jev-client.md) grep keeps its own Jev client.
-- [0002](docs/adr/0002-no-policy-module-for-cold-and-large-sessions.md) no shared policy module for cold and large sessions.
-- [0003](docs/adr/0003-transcript-lookups-stay-separate.md) transcript lookups stay separate.
-- [0004](docs/adr/0004-prices-are-a-built-in-table.md) prices are a built-in table.
-- [0005](docs/adr/0005-the-architect-is-a-plugin-agent-woken-by-jev.md) the architect is a plugin agent; Jev classifies, the hook only notes the coding agent, which starts the review itself.
+## Component responsibilities
 
-## Known debt
-- AD-001: Module cycles (to be fixed soon). `claude` <-> `architect`, `claude` <-> `peers`, `start` <-> `next` (`src/claude.rs:20-26`, `src/architect.rs:15`, `src/peers.rs`, `src/next.rs`). Pre-existing at onboarding. Policy: warn on every change that touches these modules or edges; fix is planned. [confirmed]
-- AD-002: `claude.rs` (922 lines) is a hub importing ten modules and mixing status line, settings hooks and the architect check; to be split soon. [confirmed] `start.rs` (1594) is a second hub and is to be split: its session model and reading (`Session`, `parse_session`, `read_session`, `session_files`, `session_card`, `src/start.rs:261-694`) are imported by `claude`, `peers`, `skills`, `trim`, `compact` and `measure`, so a module of their own gives them a dependency that is not the launch code. The `start` <-> `next` cycle is between launch code (`src/start.rs:22`, `src/next.rs:121`) and this split does not break it. [confirmed] `compact.rs` (1221) stays whole [observed]: its pipeline (messages, state, ask, plan, `src/compact.rs:106-636`) shares private types, and `trim` depends on it only through a small public surface (`src/trim.rs:15`); only its measuring section (`src/compact.rs:858-1082`) is a candidate, when it grows. Pre-existing at onboarding. Policy: warn when a change adds a responsibility to `claude.rs` or `start.rs`; no warning on unrelated changes.
-- AD-003: `usage::home` is a misplaced general helper [confirmed] that `claude`, `grep` and others reach through `usage` (`src/grep/mod.rs:109`). Pre-existing at onboarding. Policy: no warning unless a new module copies the pattern.
+| Component | Responsibility |
+| --- | --- |
+| `src/main.rs` | Command dispatch and top-level error handling. |
+| `src/setup.rs` | Install settings hooks, status line, skills and embedded plugin files. |
+| `src/transcript.rs` | Transcript entry representation. Transcript discovery remains command-specific. |
+| `src/usage.rs`, `src/pricing.rs`, `src/cache.rs` | Local usage accounting, model pricing and cache-state calculations. |
+| `src/start.rs` | Select relevant prior context and launch an agent. |
+| `src/next.rs`, `src/peers.rs` | Fresh-session handoffs and discovery of relevant running sessions. |
+| `src/compact.rs`, `src/trim.rs` | Verbatim context compaction and tool-output analysis. |
+| `src/ask.rs`, `src/grep/` | File questions and behavior-oriented code search. |
+| `src/jev.rs`, `src/decision.rs`, `src/auth.rs` | Shared decision requests, explicit provider wire adapters and credential lookup. Semantic search owns a separate evaluator/policy. |
+| `src/architect.rs` | Classify changes against architecture memory and decision records. |
+| `src/skills.rs`, `src/measure.rs` | Workflow analysis and context-selection evaluation. |
+| `src/awareness.rs`, `src/js.rs` | Cost-awareness state and JSON-access utilities. |
 
-## Tensions
-- Hook logic exists twice: settings hook `prompt` in `claude.rs` and plugin `prompt.js` (ADR 0002 accepts this). [observed]
-- The architect feature is new and uncommitted at onboarding; its classifier, plugin hook and agent definition are one concept across Rust and JS. [observed]
-- Embedding plugin files in the binary (`setup.rs:42-`) means every plugin file added must be registered in a list there. [observed]
+## Claude Code plugin
 
-## Deliberate exceptions
-- `grep/evaluator.rs` separate from `jev.rs` (ADR 0001). [confirmed by ADR]
-- Four transcript lookups (ADR 0003). [confirmed by ADR]
-- Settings hook and plugin hook each decide cold/large sessions (ADR 0002). [confirmed by ADR]
+`plugin/hooks/index.js` registers the runtime modules. The plugin contains:
 
-## Open questions
-None at present.
+- Search tools over the existing CLI: `search_code` and `ask_file`, with bounded
+  inputs, normal source exclusions and navigation guidance. Search offers a
+  compact shortlist and shares source budget before expanding excerpts.
+- The experimental projectWorkflow option provides instruction-only coaching for
+  main agents and subagents. The explicit project-workflow skill proposes one
+  compact project entrypoint and selective references/helpers, with exact diffs
+  and approval before persistence. It makes no hook-side writes, model calls or
+  script executions, and does not enforce native memory behavior.
+- eval/surveyor is an isolated research harness for as-built reconstruction. It
+  compares adapted onboarding prompts on synthetic source, checks citations and
+  leaves architectural truth to semantic review. It is not an installed agent,
+  makes model calls only when explicitly run, and does not change onboarding.
+- Context and cache integrations: compaction, turn folding, cold-cache dialogs,
+  large-file outlines and eligible unread-file edit retries.
+- Agent integrations: shadow routing, cost-awareness notes and repeated-report
+  reduction.
+- Architect integrations: change notifications, an architect agent definition,
+  and skills for onboarding, auditing and recording decisions.
+- Experimental Auto-denial approval and diagnostic permission logging.
+- An optional output style and plugin configuration manifests.
+
+Plugin files are embedded at compile time by `src/setup.rs`. Every runtime file
+imported by the plugin must be included in the installer's file inventory; the
+setup tests check that inventory. Adding a source file alone does not update an
+already installed plugin or binary.
+
+## Data and control flows
+
+### Code navigation
+
+The agent chooses a search or file-question tool. The plugin validates inputs
+and invokes the CLI through `$.process.run`, without a shell. Rust applies source
+eligibility rules and sends eligible data to the explicitly selected decision
+provider (TypeSafe by default). The plugin returns source
+evidence and diagnostics rather than synthesizing an answer. PHP, Python and
+JavaScript/TypeScript parsers provide declaration boundaries; malformed source
+falls back to text units. Presentation limits do not change discovery or file
+relevance scores, and partial snippets are explicitly identified. Exact-symbol
+searches remain the responsibility of ordinary Grep or equivalent tools.
+
+### Context management
+
+Local transcript readers supply usage analysis and context selection. Jev
+selects retained context; it does not rewrite the retained conversation.
+Compaction may drop tool calls or shorten their output while preserving retained
+conversation text verbatim. Claude Code can fall back to its normal summary
+compaction when the SessionKit path fails or does not free sufficient context.
+
+### Architect review
+
+An onboarded target repository stores its memory in `ARCHITECTURE.md` and
+`docs/adr/`. Hooks send the person's request, each eligible plan and edit, and
+the turn as a whole to the Rust classifier. A relevant request goes out with
+the rules that apply as context; a relevant edit adds a note to the coding
+agent's context with the rule quoted to the line; a turn that took a decision
+without recording it, or left a note unanswered, comes back as the next turn.
+The coding agent judges a small case itself and starts the architect through
+its normal agent workflow for a large one. Architect advice does not veto
+changes. The user approves architectural decisions and memory updates. Hooks
+do not directly spawn architect review agents.
+
+### Experimental permission handling
+
+The initial permission check remains unchanged. The approval integration
+correlates `classic.PermissionDenied` with the active call and checked inputs,
+then requests explicit approval for one retry. Approval is call-scoped,
+argument-specific and never persisted as a permission rule. Explicit rules,
+hook decisions and organization ceilings remain in force. This path is disabled
+by default and is not yet live-verified after a real classifier denial.
+
+## Dependency and ownership rules
+
+- Plugin JavaScript reaches Jev-backed logic through the SessionKit CLI.
+- New Jev-backed Rust commands use the shared client in `src/jev.rs`, unless a
+  separately documented protocol or policy requires an exception.
+- `src/auth.rs` owns credential lookup; `src/pricing.rs` owns the built-in price table.
+- Transcript representation and command-specific transcript discovery remain
+  distinct responsibilities.
+- Local analysis must not acquire an unnecessary network or authentication dependency.
+- Preserve verbatim retained context and make incomplete search results explicit.
+- Keep architecture advice separate from permission enforcement.
+- Avoid introducing additional platform-specific coupling into portable logic.
+
+## Storage and external services
+
+There is no application database or long-running SessionKit server. State uses
+local files and the host's credential facilities:
+
+| Location | Purpose |
+| --- | --- |
+| `~/.claude/` | Claude Code transcripts and installed settings. |
+| `~/.cache/sessionkit/` | Selected context, search caches, handoffs, logs and evaluation results. |
+| `~/.config/sessionkit/` | Persistent feature preferences and credential-free provider/model selection in `decision.json`. |
+| macOS Keychain / Linux Secret Service | Separately stored TypeSafe/OpenRouter credentials; no plaintext fallback. |
+| Target repository | Architecture memory and decision records. |
+
+`usage` and status-line calculations are local. Decision-backed workflows send
+source, conversation data or architecture changes to the selected provider as
+required (TypeSafe by default). Decisions and Clef are experimental adapters,
+with no automatic provider fallback; see [provider verification](docs/decision-providers.md). Transcripts
+are not automatically redacted. Default source exclusions reduce accidental
+exposure but are not a comprehensive secret-detection guarantee.
+
+## Accepted design decisions
+
+- [ADR 0001](docs/adr/0001-grep-keeps-its-own-jev-client.md): semantic search keeps its own evaluator and Jev client.
+- [ADR 0002](docs/adr/0002-no-policy-module-for-cold-and-large-sessions.md): settings and function-hook policies remain separate.
+- [ADR 0003](docs/adr/0003-transcript-lookups-stay-separate.md): transcript discovery remains command-specific.
+- [ADR 0004](docs/adr/0004-prices-are-a-built-in-table.md): model prices are a built-in table.
+- [ADR 0005](docs/adr/0005-the-architect-is-a-plugin-agent-woken-by-jev.md): the coding agent initiates architect reviews after hook notifications.
+- [ADR 0006](docs/adr/0006-decision-provider-adapters-preserve-caller-policies.md): shared provider wire adapters preserve caller policies; non-Jev synthetic live checks passed; broader calibration pending.
+- [ADR 0007](docs/adr/0007-the-architect-speaks-at-four-moments-of-a-turn.md): the architect briefs before the turn, notes during it, reads the whole turn at its end and brings what is open back as the next turn; no veto.
+
+## Maintenance constraints
+
+- **AD-001 — Module cycles.** Existing coupling includes `claude`/`architect`,
+  `claude`/`peers` and `start`/`next`. Review changes that expand these dependency
+  cycles; prefer narrower interfaces for new responsibilities.
+- **AD-002 — Broad coordinator modules.** `claude.rs` and `start.rs` combine several
+  responsibilities. Avoid adding unrelated responsibilities. A future extraction
+  of session reading from launch orchestration should preserve command-specific
+  discovery policies. No refactoring deadline is implied.
+- **AD-003 — Shared filesystem helper ownership.** General-purpose callers obtain
+  some path helpers through `usage`. Avoid propagating that ownership pattern
+  into new modules; centralize it when a focused refactoring is justified.
+
+Settings hooks and function hooks intentionally overlap in some cold-cache and
+large-context policies. Semantic search's separate client and multiple transcript
+lookups are documented exceptions, not accidental duplication to consolidate
+without reviewing their distinct behavior.
+
+## Build, verification and compatibility
+
+- `cargo test --locked` validates Rust behavior and the plugin file inventory.
+- `claude plugin test plugin` validates function hooks and tool wrappers.
+- `eval/` contains optional evaluation scripts outside the runtime dependency graph.
+- Release automation builds macOS and Linux x86_64 archives. Legacy private Homebrew publication
+  is restricted to its original repository; the public installation path is
+  documented in the README.
+- Rust CI and portable install/HTTP smoke tests run on macOS and Ubuntu. Keychain,
+  Linux Secret Service and terminal handoff behavior require platform-specific
+  facilities; desktop keyring and Claude function hooks still need live checks.
+- Claude Code function hooks, transcript formats and running-session metadata may
+  change between versions. Live verification complements mocked tests; neither
+  small fixture tests nor local measurements establish general performance guarantees.

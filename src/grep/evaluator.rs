@@ -16,7 +16,7 @@ const REQUEST_LIMIT: usize = 50_000;
 const TIMEOUT_MS: u64 = 60_000; // jevgrep 0.4.3 and later, for TypeSafe: a large state can take longer than 15 s
 /// Our own parser identity: answers computed on jevgrep's CPython and TypeScript boundaries are
 /// never reused.
-const PARSER_VERSION: &str = "sessionkit-tree-sitter-python-0.25-oxc-0.151";
+const PARSER_VERSION: &str = "sessionkit-tree-sitter-python-0.25-php-0.24.2-oxc-0.151";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
@@ -65,6 +65,8 @@ enum Attempt {
 pub struct Evaluator {
     api_key: String,
     endpoint: String,
+    provider: crate::decision::Provider,
+    model: String,
     concurrency: usize,
     policy_version: String,
     cache: Option<Cache>,
@@ -115,11 +117,14 @@ impl Drop for Turn<'_> {
 }
 
 impl Evaluator {
-    pub fn new(api_key: String, concurrency: usize, policy_version: String, cache: Option<Cache>, cancelled: &'static AtomicBool) -> Evaluator {
+    pub fn new(api_key: String, concurrency: usize, policy_version: String, cache: Option<Cache>, cancelled: &'static AtomicBool) -> crate::Result<Evaluator> {
+        let provider = crate::decision::Provider::selected()?;
+        let model = if provider == crate::decision::Provider::Jev && std::env::var("SESSIONKIT_MODEL").is_err() { MODEL.into() } else { provider.model() };
+        let endpoint = if provider == crate::decision::Provider::Jev { endpoint() } else { provider.endpoint(&model)? };
         let agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_millis(TIMEOUT_MS))).http_status_as_error(false).build().into();
-        Evaluator {
+        Ok(Evaluator {
             api_key,
-            endpoint: endpoint(),
+            endpoint, provider, model,
             concurrency,
             policy_version,
             cache,
@@ -134,7 +139,7 @@ impl Evaluator {
             next_ticket: AtomicU64::new(0),
             serving: Mutex::new(0),
             turn: Condvar::new(),
-        }
+        })
     }
 
     /// The next place in the evaluation order.
@@ -199,7 +204,7 @@ impl Evaluator {
 
     fn namespace(&self) -> Value {
         json!({
-            "model": MODEL, "provider": "typesafe", "endpoint": BASE_URL, "protocol": "typesafe-ai-3.0.8",
+            "model": self.model, "provider": self.provider.name(), "endpoint": self.endpoint, "protocol": "sessionkit-decision-adapters-1",
             "policyVersion": self.policy_version, "parserVersion": PARSER_VERSION, "promptVersion": "unit-locators-1",
         })
     }
@@ -308,7 +313,9 @@ impl Evaluator {
             question.insert("type".into(), "noul".into());
             (id.clone(), Value::Object(question))
         }).collect();
-        let body = js::stringify(&json!({"model": MODEL, "state": request["state"], "questions": wire}));
+        let canonical = json!({"model": self.model, "state": request["state"], "questions": wire});
+        let body = self.provider.body(&canonical).map_err(|_| Ok(Attempt::Invalid))?;
+        let body = js::stringify(&body);
         let sent = self.agent.post(&self.endpoint).header("Authorization", &format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json").send(body.as_str());
         let mut response = match sent {
@@ -334,6 +341,7 @@ impl Evaluator {
             return Err(Ok(Attempt::Status(status, diagnostic(&text, &self.api_key))));
         }
         let Some(data) = js::parse(&text) else { return Err(Ok(Attempt::Invalid)) };
+        let data = self.provider.normalize(data, &canonical).map_err(|_| Ok(Attempt::Invalid))?;
         let Some(answers) = data.get("answers").and_then(Value::as_object) else { return Err(Ok(Attempt::Invalid)) };
         // The answer keys must be exactly the question keys, each a Noul in [0, 1].
         if answers.len() != questions.len() {

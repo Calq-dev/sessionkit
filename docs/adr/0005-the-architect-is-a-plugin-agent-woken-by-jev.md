@@ -1,7 +1,33 @@
-# The architect is a plugin agent that Jev wakes
+# ADR 0005: Architect reviews are initiated by the coding agent
 
-The architect lives in the Claude Code plugin, not in the CLI: an agent definition (`plugin/agents/architect.md`), a skill for onboarding and audits, and a hook (`plugin/hooks/architect.js`) that sends each plan, Edit and Write to `sessionkit hook architect-check` after it is done, without waiting. The Rust side only classifies: one Jev Choice over the change and `ARCHITECTURE.md` side by side, plus one Choice per decision record in `docs/adr/` in the same request, so each record is held against the change as a pair (a change that goes against one wakes the architect with its text), behind a `Classifier` trait so a command can answer instead. Advice is never a block. The hook starts no agent: for a change Jev finds architectural it appends a note to the loop that made the change (file, Jev's reading with category and probability, the decision records it may go against). That coding agent checks a small case itself (one file against one named record) or starts `sessionkit:architect` in the background with `Review.`; a broken rule or a decision goes to the person, and a decision taken is recorded by `sessionkit:architect` with `Record.`. Its memory is `ARCHITECTURE.md` plus `docs/adr/`, the convention this repository and Matt Pocock's skills already use, and no state file: the baseline commit is the memory's first line.
+## Context
 
-## Why the hook does not spawn the reviewer
+Architectural review requires repository memory, change classification and a
+reviewer with an independent context. Hook-initiated agent spawns can encounter
+permission restrictions in Claude Code Auto mode. Review advice should remain
+separate from permission enforcement and must not veto ordinary edits.
 
-An earlier design had the hook start a read-only review agent (`sessionkit:architect-review`), queue reviews, parse verdicts and ask the person with a Follow/Decide/Discuss dialog. In auto mode, when the classifier runs server side, a spawn from a hook is refused ("the request that produced this action did not ask for one"); an agent the model starts is reviewed normally (verified on Claude Code 2.1.291). Spawning therefore belongs to the model in the loop, not to the hook. The `brief` and `earlier` fields of the Rust classifier output are no longer used by the plugin.
+## Decision
+
+Implement the architect as a Claude Code plugin agent, with onboarding and audit
+skills. The hook sends eligible plans, edits and writes to the Rust classifier
+asynchronously. The classifier evaluates the change against `ARCHITECTURE.md`
+and the individual decision records in `docs/adr/`.
+
+For a relevant result, the hook adds a note to the originating coding agent's
+context. The note identifies the change, its classification and any applicable
+decision records. The hook does not spawn a review agent.
+
+The coding agent reviews a small case directly or starts `sessionkit:architect`
+through its normal agent workflow. Architectural decisions and memory changes
+require user approval. Architecture memory and the baseline remain in
+`ARCHITECTURE.md` and `docs/adr/`, rather than a separate review-state database.
+
+## Consequences
+
+- Reviewer creation remains subject to the normal agent permission workflow.
+- The reviewer receives the change and repository evidence without relying on
+  the coding agent's justification.
+- Classification, review orchestration and authorization remain distinct concerns.
+- Hooks do not need a reviewer queue or a separate review-verdict dialog.
+- Notes delivered after a turn's final request may be read on the next turn.

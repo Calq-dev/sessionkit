@@ -26,6 +26,8 @@ pub const MEMORY: &str = "ARCHITECTURE.md";
 const MARKER: &str = "<!-- sessionkit architect";
 /// Decision records live beside the memory; the architect writes them, so they are not checked.
 const DECISIONS: &str = "docs/adr";
+/// A change makes an architectural decision at or above this (SESSIONKIT_ARCHITECT_DECIDE).
+const DECIDE_AT: f64 = 0.6;
 
 /// Relevance at or above this wakes the architect (SESSIONKIT_ARCHITECT_WAKE). Set between the
 /// ordinary cases (0.00 to 0.53) and the architectural ones (0.91 to 1.00) of eval/architect; the
@@ -72,18 +74,31 @@ pub const RELATIONS_TO_DECISION: [(&str, &str); 3] = [
     ("unrelated", "The change does not touch what the decision is about."),
 ];
 
-/// What the classifier read: a probability per category, and per decision record a probability
-/// per relation.
+/// What the classifier read: a probability per category, per decision record a probability per
+/// relation, and the probability that the change makes an architectural decision of its own.
 #[derive(Default)]
 pub struct Reading {
     pub categories: Map<String, Value>,
     pub decisions: Map<String, Value>,
+    pub decision: f64,
 }
 
 /// Scores a change against the memory and the decision records.
 pub trait Classifier {
     fn name(&self) -> String;
     fn classify(&self, change: &Change, memory: &str, decisions: &[Decision]) -> Result<Reading>;
+    /// Whether this classifier can also point at the line of a rule (Jev can; a command cannot).
+    fn finds_lines(&self) -> bool {
+        false
+    }
+}
+
+/// A record whose status line says it is superseded is history, not a rule: its successor is.
+fn superseded(text: &str) -> bool {
+    text.lines().take(12).any(|line| {
+        let line = line.trim().trim_start_matches(['*', '_', '-', ' ']).to_ascii_lowercase();
+        line.starts_with("status") && line.contains("superseded")
+    })
 }
 
 /// The decision records of a repository, in the order of their numbers.
@@ -92,7 +107,7 @@ fn decisions_of(root: &Path) -> Vec<Decision> {
         .map(|entry| entry.path()).filter(|path| path.extension().is_some_and(|e| e == "md")).collect();
     files.sort();
     files.into_iter().filter_map(|path| {
-        let text = std::fs::read_to_string(&path).ok()?;
+        let text = std::fs::read_to_string(&path).ok().filter(|text| !superseded(text))?;
         Some(Decision { file: format!("{DECISIONS}/{}", path.file_name()?.to_string_lossy()), text })
     }).collect()
 }
@@ -137,18 +152,28 @@ impl Classifier for Jev {
     }
 
     fn classify(&self, change: &Change, memory: &str, decisions: &[Decision]) -> Result<Reading> {
+        let what = what_change_is(&change.kind);
         let mut questions = Map::new();
         questions.insert("category".into(), json!({
             "type": "choice",
-            "instructions": "What does `change` do to the architecture that `architecture` describes? `change` is \
-                what a coding agent just did: a plan it presented, or an edit with its diff. Judge the change \
-                itself, not the code around it.",
+            "instructions": format!("What does `change` do to the architecture that `architecture` describes? {what} \
+                Judge the change itself, not the code around it."),
             "criteria": category_criteria(),
+        }));
+        questions.insert("decision".into(), json!({
+            "type": "noul",
+            "instructions": format!("Does `change` make an architectural decision of its own: it changes who owns a concept \
+                or data, the direction of a dependency, a public contract or schema, or adds a module, process, \
+                external dependency or broadly reused abstraction? {what} A decision the memory already records is not new."),
+            "criteria": {
+                "true": "The change takes such a decision, intended or not; the memory does not record it yet.",
+                "false": "The change stays within what the memory already describes, or is local to one module.",
+            },
         }));
         for (i, decision) in decisions.iter().enumerate() {
             questions.insert(decision.file.clone(), json!({
                 "type": "choice",
-                "instructions": format!("How does `change` relate to the decision recorded in `decisions[{i}].text`? \
+                "instructions": format!("How does `change` relate to the decision recorded in `decisions[{i}].text`? {what} \
                     Judge the change itself, not the code around it."),
                 "criteria": relation_criteria(),
             }));
@@ -159,13 +184,27 @@ impl Classifier for Jev {
         Ok(Reading {
             categories: probabilities("category"),
             decisions: decisions.iter().map(|d| (d.file.clone(), Value::Object(probabilities(&d.file)))).collect(),
+            decision: data["answers"]["decision"]["noul"].as_f64().unwrap_or(0.0),
         })
+    }
+
+    fn finds_lines(&self) -> bool {
+        true
+    }
+}
+
+/// What `change` holds, per kind, so Jev reads a request or a whole turn as what it is.
+fn what_change_is(kind: &str) -> &'static str {
+    match kind {
+        "prompt" => "`change` is what the person just asked a coding agent to do, in their words; judge what doing it would do.",
+        "turn" => "`change` is what a coding agent did in one turn: what it said, and the diff of all its edits together.",
+        _ => "`change` is what a coding agent just did: a plan it presented, or an edit with its diff.",
     }
 }
 
 /// Any program that reads {change, architecture, decisions, categories, relations} as JSON on
-/// stdin and prints {"probabilities": {category: p}, "decisions": {file: {relation: p}}}; the
-/// second part may be left out.
+/// stdin and prints {"probabilities": {category: p}, "decisions": {file: {relation: p}}, "decision": p};
+/// all but the first may be left out.
 struct Command(String);
 
 impl Classifier for Command {
@@ -184,7 +223,7 @@ impl Classifier for Command {
         let answer = js::parse(js::trim(&String::from_utf8_lossy(&output.stdout)))
             .ok_or_else(|| format!("{}: no JSON on stdout", self.0))?;
         let part = |key: &str| answer.get(key).and_then(Value::as_object).cloned().unwrap_or_default();
-        Ok(Reading { categories: part("probabilities"), decisions: part("decisions") })
+        Ok(Reading { categories: part("probabilities"), decisions: part("decisions"), decision: answer["decision"].as_f64().unwrap_or(0.0) })
     }
 }
 
@@ -232,9 +271,76 @@ fn classifier() -> Option<Box<dyn Classifier>> {
     }
 }
 
-/// For the plugin's hooks: input {session_id, cwd, kind (plan, edit, create), file, change,
-/// answers {wake, relevance, category, probabilities, root, against, against_text} or {wake: false,
-/// reason}.
+/// The lines that state the rules the change touches: one per decision record it goes against,
+/// and the one in the memory the category points at. Each is one find over a short text; a find
+/// that fails or finds nothing is left out, since the note still carries the records' text.
+fn rules_of(memory: &str, change: &Change, category: &str, decisions: &[Decision], against: &[String]) -> Vec<Value> {
+    let mut rules = Vec::new();
+    for decision in decisions.iter().filter(|d| against.contains(&d.file)) {
+        let question = "Which line states what this decision requires or rules out: the rule a change could go against?";
+        if let Ok(Some((line, _, _))) = crate::ask::find_line(&decision.file, &decision.text, question) {
+            rules.push(json!({"file": decision.file, "line": line, "text": sentence_at(&decision.text, line)}));
+        }
+    }
+    if CATEGORIES.iter().any(|(name, _, counts)| *name == category && *counts) {
+        let question = format!("Which line states the ownership, dependency rule or principle that this {category} change touches? \
+            The change{}: {}", if change.file.is_empty() { String::new() } else { format!(" to {}", change.file) },
+            js::head(js::trim(&change.text), 400));
+        if let Ok(Some((line, _, _))) = crate::ask::find_line(MEMORY, memory, &question) {
+            rules.push(json!({"file": MEMORY, "line": line, "text": sentence_at(memory, line)}));
+        }
+    }
+    rules
+}
+
+/// The sentence a line belongs to: back to the start of the sentence over hard-wrapped lines, and
+/// forward up to the first line that ends a sentence or a paragraph, within a short budget.
+fn sentence_at(text: &str, line: usize) -> String {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let breaks = |l: &str| l.is_empty() || l.starts_with('-') || l.starts_with('#') || l.ends_with('.') || l.ends_with(':');
+    let mut start = line.max(1);
+    while start > 1 && !breaks(js::trim(lines[start - 2])) {
+        start -= 1;
+    }
+    let mut out = String::new();
+    for raw in lines.iter().skip(start - 1) {
+        let part = js::trim(raw);
+        if part.is_empty() || (!out.is_empty() && (part.starts_with('-') || part.starts_with('#'))) {
+            break;
+        }
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(part);
+        if part.ends_with('.') || part.ends_with(':') || out.len() > 240 {
+            break;
+        }
+    }
+    js::clip(&out, 300)
+}
+
+/// Per note the architect left this turn, whether the agent's answer dealt with it: checked it
+/// and said what it found, changed course, started the architect, or put it to the person.
+fn addressed_of(notes: &[String], answer: &str) -> Result<Vec<f64>> {
+    let questions: Map<String, Value> = notes.iter().enumerate().map(|(i, _)| (format!("note{i}"), json!({
+        "type": "noul",
+        "instructions": format!("Does `answer`, what the coding agent said at the end of its turn, deal with `notes[{i}]`?"),
+        "criteria": {
+            "true": "It checked the point and said what it found, changed its approach because of it, had the architect review it, or put it to the person.",
+            "false": "It does not mention the point, or only says it will look later.",
+        },
+    }))).collect();
+    let state = json!({"notes": notes.iter().map(|n| js::clip(n, 1200)).collect::<Vec<_>>(), "answer": js::clip(answer, 6000)});
+    let data = post(&json!({"model": model(), "state": state, "questions": questions}))?;
+    Ok((0..notes.len()).map(|i| data["answers"][format!("note{i}")]["noul"].as_f64().unwrap_or(0.0)).collect())
+}
+
+/// For the plugin's hooks: input {session_id, cwd, kind (plan, edit, create, prompt, turn), file,
+/// change, and for a turn also answer (what the agent said) and notes (the architect's notes of
+/// that turn)}; answers {wake, relevance, category, decision, probabilities, root, against,
+/// against_text, rules, addressed} or {wake: false, reason}. A prompt or a turn is held against
+/// the memory like an edit; `decision` says whether it makes an architectural decision of its own
+/// and `addressed` whether the answer dealt with each note.
 pub fn check(input: &Value, classifier: Option<&dyn Classifier>, wake_at: f64) -> Result<Value> {
     let file = js::str_of(input, "file");
     let start = if file.is_empty() { PathBuf::from(js::str_of(input, "cwd")) } else { PathBuf::from(file).parent().map(Path::to_path_buf).unwrap_or_default() };
@@ -245,25 +351,37 @@ pub fn check(input: &Value, classifier: Option<&dyn Classifier>, wake_at: f64) -
     if relative == MEMORY || relative.starts_with(&format!("{DECISIONS}/")) {
         return Ok(json!({"wake": false, "reason": "architecture memory"}));
     }
-    let change = Change { kind: js::str_of(input, "kind").to_string(), file: relative, text: js::str_of(input, "change").to_string() };
-    if js::trim(&change.text).is_empty() {
+    let notes: Vec<String> = input["notes"].as_array().into_iter().flatten().filter_map(Value::as_str).map(String::from).collect();
+    let answer = js::str_of(input, "answer");
+    let diff = js::str_of(input, "change");
+    let text = if answer.is_empty() { diff.to_string() } else { format!("What the agent said:\n{answer}\n\nThe diff of its edits:\n{diff}") };
+    let change = Change { kind: js::str_of(input, "kind").to_string(), file: relative, text };
+    if js::trim(diff).is_empty() && notes.is_empty() {
         return Ok(json!({"wake": false, "reason": "empty change"}));
     }
     let Some(classifier) = classifier else {
         return Ok(json!({"wake": false, "reason": "no TypeSafe key at hand"}));
     };
+    let addressed = if notes.is_empty() || !classifier.finds_lines() { Vec::new() } else { addressed_of(&notes, answer)? };
+    if js::trim(diff).is_empty() {
+        return Ok(json!({"wake": false, "reason": "empty change", "addressed": addressed}));
+    }
     let decisions = decisions_of(&root);
     let reading = classifier.classify(&change, &memory, &decisions)?;
     let probabilities = reading.categories;
     let (relevance, category) = relevance(&probabilities);
     let against = against(&reading.decisions);
-    let wake = relevance >= wake_at || !against.is_empty();
+    let decided = reading.decision >= setting("ARCHITECT_DECIDE", DECIDE_AT);
+    let wake = relevance >= wake_at || !against.is_empty() || decided;
     let against_text: Map<String, Value> = decisions.iter().filter(|d| against.contains(&d.file))
         .map(|d| (d.file.clone(), json!(js::clip(js::trim(&d.text), RECORD_CHARS)))).collect();
+    let rules = if wake && classifier.finds_lines() { rules_of(&memory, &change, &category, &decisions, &against) } else { Vec::new() };
     Ok(json!({
         "wake": wake,
         "relevance": num(relevance),
         "category": category,
+        "decision": num(reading.decision),
+        "decided": decided,
         "probabilities": probabilities,
         "decisions": reading.decisions,
         "against": against,
@@ -271,6 +389,8 @@ pub fn check(input: &Value, classifier: Option<&dyn Classifier>, wake_at: f64) -
         "file": change.file,
         "classifier": classifier.name(),
         "against_text": against_text,
+        "rules": rules,
+        "addressed": addressed,
     }))
 }
 
@@ -288,6 +408,7 @@ pub fn check_main(input: &Value) -> Result<Value> {
             "probabilities": answer["probabilities"],
             "decisions": answer["decisions"],
             "relevance": answer["relevance"],
+            "decision": answer["decision"],
             "wake": answer["wake"],
         }))?;
     }
@@ -518,11 +639,12 @@ mod tests {
         answer: Map<String, Value>,
         relations: Map<String, Value>,
         seen: RefCell<Vec<(String, String)>>,
+        decision: f64,
     }
 
     impl Fake {
         fn new(answer: Value) -> Fake {
-            Fake { answer: answer.as_object().cloned().unwrap(), relations: Map::new(), seen: RefCell::new(Vec::new()) }
+            Fake { answer: answer.as_object().cloned().unwrap(), relations: Map::new(), seen: RefCell::new(Vec::new()), decision: 0.0 }
         }
     }
 
@@ -534,7 +656,7 @@ mod tests {
             self.seen.borrow_mut().push((change.file.clone(), memory.to_string()));
             let decisions = decisions.iter().map(|d| (d.file.clone(), self.relations.get(&d.file).cloned()
                 .unwrap_or(json!({"unrelated": 1.0})))).collect();
-            Ok(Reading { categories: self.answer.clone(), decisions })
+            Ok(Reading { categories: self.answer.clone(), decisions, decision: self.decision })
         }
     }
 
@@ -586,6 +708,52 @@ mod tests {
         let (sum, top) = relevance(json!({"known_debt": 0.3, "expands_debt": 0.65, "local": 0.05}).as_object().unwrap());
         assert!((sum - 0.65).abs() < 1e-9);
         assert_eq!(top, "expands_debt");
+    }
+
+    #[test]
+    fn a_change_that_makes_a_decision_wakes_the_architect_even_when_nothing_is_against_it() {
+        let root = repository(MEMORY_TEXT);
+        let mut fake = Fake::new(json!({"local": 0.5, "structure": 0.5}));
+        fake.decision = 0.8;
+        let answer = check(&edit(&root, "src/checkout/complete.rs", "+pub struct Outbox;"), Some(&fake), WAKE_AT).unwrap();
+        assert_eq!(answer["wake"], true);
+        assert_eq!(answer["decided"], true);
+        assert_eq!(answer["decision"], 0.8);
+        assert_eq!(answer["rules"], json!([])); // a fake finds no lines
+    }
+
+    #[test]
+    fn a_superseded_record_is_not_held_against_a_change() {
+        let root = repository(MEMORY_TEXT);
+        std::fs::create_dir_all(root.join("docs/adr")).unwrap();
+        std::fs::write(root.join("docs/adr/0001-old.md"), "# Old\n\nStatus: Superseded by ADR 0002\n\nText.\n").unwrap();
+        std::fs::write(root.join("docs/adr/0002-new.md"), "# New\n\n**Status:** Accepted\n\nText.\n").unwrap();
+        let files: Vec<String> = decisions_of(&root).into_iter().map(|d| d.file).collect();
+        assert_eq!(files, vec!["docs/adr/0002-new.md"]);
+    }
+
+    #[test]
+    fn a_turn_carries_what_the_agent_said_with_its_diff_and_the_notes_go_unscored_without_jev() {
+        let root = repository(MEMORY_TEXT);
+        let fake = Fake::new(json!({"local": 0.9, "boundary": 0.1}));
+        let input = json!({"session_id": "s1", "cwd": root, "kind": "turn", "file": "", "change": "+let x = 1;",
+            "answer": "Done; I kept billing's gateway.", "notes": ["the change to src/a.rs may affect the architecture"]});
+        let answer = check(&input, Some(&fake), WAKE_AT).unwrap();
+        assert_eq!(answer["wake"], false);
+        assert_eq!(answer["addressed"], json!([]));
+        let seen = fake.seen.borrow();
+        assert_eq!(seen[0].0, "");
+        let empty = json!({"session_id": "s1", "cwd": root, "kind": "turn", "file": "", "change": "", "notes": ["a note"]});
+        assert_eq!(check(&empty, Some(&fake), WAKE_AT).unwrap()["reason"], "empty change");
+    }
+
+    #[test]
+    fn a_rule_is_quoted_to_the_end_of_its_sentence() {
+        let text = "# Billing\n\nInvoices are created only by billing. Other modules ask billing through\nits gateway.\nA second paragraph.\n\n- a list";
+        assert_eq!(sentence_at(text, 3), "Invoices are created only by billing. Other modules ask billing through its gateway.");
+        assert_eq!(sentence_at(text, 4), sentence_at(text, 3)); // a wrapped continuation line gives the whole sentence
+        assert_eq!(sentence_at(text, 5), "A second paragraph.");
+        assert_eq!(sentence_at(text, 7), "- a list");
     }
 
     #[test]
