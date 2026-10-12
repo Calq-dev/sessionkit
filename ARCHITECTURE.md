@@ -69,8 +69,9 @@ requests are implemented in Rust, not duplicated in JavaScript.
   makes model calls only when explicitly run, and does not change onboarding.
 - Context and cache integrations: compaction, turn folding, cold-cache dialogs,
   large-file outlines and eligible unread-file edit retries.
-- Agent integrations: shadow routing, cost-awareness notes and repeated-report
-  reduction.
+- Agent integrations: shadow routing, cost-awareness notes, repeated-report
+  reduction and the refusal of a foreground poll loop in Bash, priced as the
+  cold write of the loop's context.
 - Architect integrations: change notifications, an architect agent definition,
   and skills for onboarding, auditing and recording decisions.
 - Experimental Auto-denial approval and diagnostic permission logging.

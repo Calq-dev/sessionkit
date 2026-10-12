@@ -38,7 +38,7 @@ const SKILL: &str = include_str!("SKILL.md");
 const SKILL_NAME: &str = "sessionkit";
 const OLD_SKILL_NAME: &str = "sessionkit-grep";
 
-const PLUGIN_FILES: [(&str, &str); 27] = [
+const PLUGIN_FILES: [(&str, &str); 28] = [
     (".claude-plugin/plugin.json", include_str!("../plugin/.claude-plugin/plugin.json")),
     (".claude-plugin/marketplace.json", include_str!("../plugin/.claude-plugin/marketplace.json")),
     ("hooks/hooks.json", include_str!("../plugin/hooks/hooks.json")),
@@ -64,16 +64,18 @@ const PLUGIN_FILES: [(&str, &str); 27] = [
     ("hooks/prompt.js", include_str!("../plugin/hooks/prompt.js")),
     ("hooks/read.js", include_str!("../plugin/hooks/read.js")),
     ("hooks/repeat.js", include_str!("../plugin/hooks/repeat.js")),
+    ("hooks/wait.js", include_str!("../plugin/hooks/wait.js")),
     ("hooks/waiting.js", include_str!("../plugin/hooks/waiting.js")),
     ("output-styles/robot.md", include_str!("../plugin/output-styles/robot.md")),
 ];
 /// What the plugin does, one line per hook or file, for the output of setup.
-const PLUGIN_FEATURES: [&str; 13] = [
+const PLUGIN_FEATURES: [&str; 14] = [
     "/compact and auto-compaction go through sessionkit compact, without a summary",
     "before a message to a cold session, a dialog asks: continue here, or compacted first",
     "before a message to a warm session above 375K, a dialog offers to compact first, or always at 375K",
     "an Edit refused because the file was not read is read and tried again, without the text in the context",
     "a teammate's idle notification that repeats its report gets a one-line result",
+    "a poll loop in the foreground of Bash is refused with what the cold write of the context costs; a long foreground command gets that line after it",
     "after the first large read, a tip that sessionkit ask answers without reading; outline first as an option in /config",
     "search_code and ask_file tools for agents, with a short navigation rule; disable Code search tools for CLI-only use",
     "per subagent, in shadow: the model and effort Jev would give it, and which warm session would fit",

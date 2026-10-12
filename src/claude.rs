@@ -839,6 +839,10 @@ pub fn hook_main(argv: &[String]) -> Result<()> {
             println!("{}", js::stringify(&awareness::agent(&input)?));
             return Ok(());
         }
+        Some("wait-cost") => {
+            println!("{}", js::stringify(&awareness::wait(&input)?));
+            return Ok(());
+        }
         Some("architect-offer") => {
             println!("{}", js::stringify(&crate::architect::offer_main(&input)));
             return Ok(());

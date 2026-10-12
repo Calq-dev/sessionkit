@@ -156,6 +156,37 @@ pub fn agent(input: &Value) -> Result<Value> {
     Ok(json!({"text": text}))
 }
 
+/// The line for a Bash call that waits: a poll loop the plugin refused (`kind: "poll"`), or a
+/// foreground command that ran longer than the cache lives (`kind: "long"`, with `seconds`).
+/// What the cold write of the loop's context costs is the number that matters.
+pub fn wait(input: &Value) -> Result<Value> {
+    let id = session_id(input);
+    let context = input.get("context").and_then(Value::as_f64).unwrap_or(0.0);
+    let rate = Rate::of(Some(js::str_of(input, "model")), false);
+    let size = if context > 0.0 { format!("Your context is {} tokens", tokens(context)) } else { "Your context".to_string() };
+    let rebuild = match rate {
+        Some(rate) if context > 0.0 => format!(", about {}{}", usd(rate.write(context, Ttl::FiveMinutes)), limit_part(&id, context)),
+        _ => String::new(),
+    };
+    let text = match js::str_of(input, "kind") {
+        "poll" => format!(
+            "sessionkit: this command waits in Bash. {size}; five minutes after your last model call its cache expires, \
+             and the next call writes all of it again{rebuild}. Run the long step with run_in_background, or wait for a \
+             condition with Monitor, and do other work meanwhile: each call keeps the cache warm."
+        ),
+        "long" => {
+            let minutes = (input.get("seconds").and_then(Value::as_f64).unwrap_or(0.0) / 60.0).round();
+            format!(
+                "sessionkit: that command ran {minutes} minutes in the foreground. {size}; its cache expired five minutes in, \
+                 and this call wrote all of it again{rebuild}. Next time run a command that long with run_in_background \
+                 and keep working: each call keeps the cache warm."
+            )
+        }
+        other => return Err(format!("unknown kind {other:?}")),
+    };
+    Ok(json!({"text": text}))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,5 +228,19 @@ mod tests {
         assert_eq!(taken.tokens, 60_220.0);
         assert_eq!(taken.peak, 40_010.0);
         assert!(taken.cost > 0.0);
+    }
+
+    #[test]
+    fn a_wait_line_prices_the_cold_write_of_the_context() {
+        let poll = wait(&json!({"kind": "poll", "context": 230_000, "model": "claude-fable-5-1"})).unwrap();
+        let text = poll["text"].as_str().unwrap();
+        assert!(text.starts_with("sessionkit: this command waits in Bash. Your context is 230K tokens;"), "{text}");
+        assert!(text.contains("about $2.88"), "{text}");
+        assert!(text.contains("run_in_background") && text.contains("Monitor"));
+        let long = wait(&json!({"kind": "long", "context": 230_000, "model": "claude-fable-5-1", "seconds": 612})).unwrap();
+        let text = long["text"].as_str().unwrap();
+        assert!(text.starts_with("sessionkit: that command ran 10 minutes in the foreground."), "{text}");
+        let unknown = wait(&json!({"kind": "poll", "model": "nobody-1"})).unwrap();
+        assert!(!unknown["text"].as_str().unwrap().contains('$'));
     }
 }

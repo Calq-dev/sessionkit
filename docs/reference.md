@@ -269,6 +269,20 @@ apart.
   the teammate's last five messages becomes one line naming that message. A function hook on
   `session.receive`, tested against the engine's test kit but not yet in a live team.
 
+- **When a command waits in Bash**: a prompt cache lives five minutes after the last model
+  call. A Bash call that waits longer, a poll loop the agent wrote (`until grep -q '^exit' …;
+  do sleep 5; done`) or a test suite run in the foreground, lets the loop's whole context go
+  cold, and the next call writes all of it again. In the transcripts here over 30 days, 390
+  such rebuilds cost $582, 5.8% of everything; 118 followed a poll loop the agent had written
+  itself, many ending at the Bash timeout of ten minutes, and 44 a test suite. A poll loop in
+  the foreground is refused with the number that matters: "Your context is 230K tokens; five
+  minutes after your last model call its cache expires, and the next call writes all of it
+  again, about $2.88", and what to do instead: `run_in_background` or Monitor, and other work
+  meanwhile, since each call keeps the cache warm. A foreground command that ran longer than
+  five minutes gets that line after it. The same loop in the background goes ahead. Function
+  hooks on `tool.call` for Bash and on `turn.step` (for the size of each loop's context);
+  `sessionkit hook wait-cost` words the line.
+
 - **When a subagent starts**, in shadow: Jev says which model and effort level would have been
   enough for its task, and `hook agent-route` logs that beside the model it got, in
   `~/.cache/sessionkit/agent-routes.jsonl`. Nothing changes the spawn, and it does not wait. The
