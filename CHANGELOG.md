@@ -6,6 +6,19 @@ usage data. Versions before the public repository are retained as historical
 release notes, not links to public release artifacts. The project was named
 `jev-start` before version 0.3.0.
 
+## 0.24.0 — 2026-10-12
+
+- The architect reads the domain language with the architecture. A repository with a
+  `GLOSSARY.md` in the format of Matt Pocock's domain-modeling skill (a term in bold, its
+  definition, the words to avoid under `_Avoid_`; one at the root or one per context in
+  `GLOSSARY-MAP.md`) has its terms held against each request, plan, edit and turn in the same
+  Jev request as the memory and the decision records. A change that names a concept by a word
+  the glossary rules out gets the term quoted to its line in the note; a turn that names a
+  concept the glossary lacks, or gives one a second name, comes back as the next turn. The
+  architect may write the glossaries in Record; sessionkit creates none. Edits of a glossary
+  are not checked. A command classifier gets `glossary` and `uses` in its input and may answer
+  `terms` and `new_term`. ADR 0008.
+
 ## 0.23.0 — 2026-10-12
 
 - A poll loop in the foreground of Bash (`until …; do sleep …; done`, `for i in $(seq …)`, a

@@ -137,9 +137,11 @@ test("an architect writes only its memory, and its writes are not checked", asyn
   const seen = world(on, []);
   const { agentId } = await $.agent.spawn({ subagentType: "sessionkit:architect", prompt: "Onboard. Repository: /repo." });
   const code = await $.tool.call({ ...EDIT, agentId });
-  expect(code.deny).toContain("The architect writes only ARCHITECTURE.md and docs/adr/");
+  expect(code.deny).toContain("The architect writes only ARCHITECTURE.md, GLOSSARY.md and docs/adr/");
   const memory = await $.tool.call({ tool: "Write", file_path: "/repo/ARCHITECTURE.md", content: "# Architecture", agentId });
   expect(memory.deny).toBeUndefined();
+  const glossary = await $.tool.call({ tool: "Write", file_path: "/repo/src/billing/GLOSSARY.md", content: "# Billing", agentId });
+  expect(glossary.deny).toBeUndefined();
   const adr = await $.tool.call({ tool: "Write", file_path: "/repo/docs/adr/0005-billing-owns-invoices.md", content: "# Billing", agentId });
   expect(adr.deny).toBeUndefined();
   await clock.settle();
@@ -160,6 +162,15 @@ test("a rule the check found is quoted in the note, with the size of the turn", 
   await notify(engine($, seen), undefined, reading);
   expect(seen.appended[0].text).toContain("\n- ARCHITECTURE.md:12: Billing owns invoices and their persistence. [confirmed]\nCheck it");
   expect(seen.appended[0].text).toContain("This turn has changed 3 files so far. Start the agent");
+});
+
+test("a term the change misnames is named in the note, with the glossary line", async ($, on) => {
+  const seen = world(on, []);
+  const reading = { ...LOUD, against: [], against_text: {}, misnamed: ["Invoice"],
+    rules: [{ file: "GLOSSARY.md", line: 11, text: "Invoice: A request for payment sent to a customer after delivery. Avoid: Bill." }] };
+  await notify(engine($, seen), undefined, reading);
+  expect(seen.appended[0].text).toContain("read as boundary (0.97); it names Invoice by a word the glossary rules out." +
+    "\n- GLOSSARY.md:11: Invoice: A request for payment sent to a customer after delivery. Avoid: Bill.\nCheck it");
 });
 
 test("a request that touches the architecture goes out with the rules that apply as context", async ($, on) => {
@@ -185,7 +196,7 @@ test("an ordinary request goes out as it is, and a failed read lets it through",
 
 test("at the end of a turn the changes are read once more, and an open note or a decision comes back as the next turn", async ($, on) => {
   const clock = mock.clock(on);
-  const seen = world(on, [LOUD, { ...QUIET, decided: true, decision: 0.82, category: "structure", addressed: [0.1] }]);
+  const seen = world(on, [LOUD, { ...QUIET, decided: true, decision: 0.82, category: "structure", addressed: [0.1], named: true, new_term: 0.88 }]);
   await $.tool.call(EDIT);
   await clock.settle();
   await $.turn.complete(TURN);
@@ -195,6 +206,7 @@ test("at the end of a turn the changes are read once more, and an open note or a
   const text = seen.submitted[0].text;
   expect(text).toContain("before this work is left, deal with the following; then go on.");
   expect(text).toContain("This turn takes an architectural decision (0.82): read as structure.");
+  expect(text).toContain("This turn names a domain concept the glossary does not define, or gives one a second name (0.88).");
   expect(text).toContain("A note of this turn was not dealt with:\nsessionkit architect (Jev): the change to src/checkout/complete.rs");
   // The next turn starts clean: nothing is read twice.
   await $.turn.complete(TURN);

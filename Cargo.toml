@@ -1,6 +1,6 @@
 [package]
 name = "sessionkit"
-version = "0.23.0"
+version = "0.24.0"
 edition = "2024"
 description = "Tools for Claude Code: semantic code search, focused file questions, lean context and local usage analysis."
 repository = "https://github.com/janegbert/sessionkit"
