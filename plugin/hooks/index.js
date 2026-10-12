@@ -13,6 +13,7 @@ import { register as autoPermission } from "./auto-permission.js";
 import { register as read } from "./read.js";
 import { register as repeat } from "./repeat.js";
 import { register as searchTools } from "./search-tools.js";
+import { register as wait } from "./wait.js";
 
 /** @type {import('claude-code').Register} */
 export const register = (on, options) => {
@@ -30,4 +31,5 @@ export const register = (on, options) => {
   read(on, options);
   repeat(on, options);
   searchTools(on, options);
+  wait(on, options);
 };

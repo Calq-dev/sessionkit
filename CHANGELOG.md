@@ -6,6 +6,16 @@ usage data. Versions before the public repository are retained as historical
 release notes, not links to public release artifacts. The project was named
 `jev-start` before version 0.3.0.
 
+## 0.23.0 — 2026-10-12
+
+- A poll loop in the foreground of Bash (`until …; do sleep …; done`, `for i in $(seq …)`, a
+  `sleep` of a minute or more) is refused with what it costs: the loop's context goes cold
+  five minutes after its last model call, and the next call writes all of it again, priced
+  for the loop's own context and model. The agent runs the step with `run_in_background` or
+  waits with Monitor and works meanwhile. A foreground command that ran longer than five
+  minutes gets the same line after it. Measured over 30 days of transcripts: 390 cache
+  rebuilds cost 5.8% of everything, and 118 followed such a loop. New hook `wait-cost`.
+
 ## 0.22.0 — 2026-10-12
 
 - The architect speaks at four moments of a turn (ADR 0007). Before the turn, a request
