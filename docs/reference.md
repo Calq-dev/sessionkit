@@ -402,7 +402,10 @@ change touches the architecture.
   concept the glossary lacks, or gives one a second name, is asked to name it by a term the
   glossary has or to put the new term to you. A term you confirm, the architect adds to the
   glossary with `/sessionkit:architecture record`. Without a glossary nothing is asked about
-  language; the architect never creates one.
+  language; the architect never creates one. The skill that writes one is not part of
+  sessionkit: `claude plugin install mattpocock-skills@claude-plugins-official`, then
+  `/mattpocock-skills:domain-modeling` in the repository. The same plugin holds the lenses the
+  architect agent loads when they are installed.
 - **The offer.** In a git repository without an architect, sessionkit asks once per session,
   after the first answer: *Onboard now*, *Not now* (asked again next session) or *Never for
   this project*, which is kept in `~/.config/sessionkit/architect.json`; delete the repository's

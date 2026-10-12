@@ -128,7 +128,9 @@ The architect surveys the repository, drafts **`ARCHITECTURE.md`** and asks you 
 confirm the assumptions that matter. Decisions are recorded in **`docs/adr/`**. A
 **`GLOSSARY.md`** in the format of the domain-modeling skill, if you keep one, is
 read with it: a change that names a concept by a word the glossary rules out
-gets the term quoted; a concept the glossary lacks is put to you.
+gets the term quoted; a concept the glossary lacks is put to you. The skill that
+writes the glossary is a separate plugin:
+`claude plugin install mattpocock-skills@claude-plugins-official`.
 Once onboarded, Jev reads your request, each plan and edit, and the turn as a
 whole against that memory. A request that touches the architecture goes out with
 the rules that apply; an architectural edit gets a note that quotes the rule to
