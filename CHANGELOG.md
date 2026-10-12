@@ -6,7 +6,7 @@ usage data. Versions before the public repository are retained as historical
 release notes, not links to public release artifacts. The project was named
 `jev-start` before version 0.3.0.
 
-## Unreleased
+## 0.24.0 — 2026-10-12
 
 - The architect reads the domain language with the architecture. A repository with a
   `GLOSSARY.md` in the format of Matt Pocock's domain-modeling skill (a term in bold, its
