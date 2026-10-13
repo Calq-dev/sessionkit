@@ -52,7 +52,7 @@ See [project-workflow design, usage and limits](project-workflow.md).
 The tested installation path is macOS with a current Rust toolchain and Claude Code:
 
 ```sh
-git clone https://github.com/janegbert/sessionkit.git
+git clone https://github.com/Calq-dev/sessionkit.git
 cd sessionkit
 cargo install --path . --locked
 sessionkit setup

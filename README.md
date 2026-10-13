@@ -32,7 +32,7 @@ agent tools have been live-tested with Claude Code 2.1.291.
 Build from source with a current Rust toolchain:
 
 ```sh
-git clone https://github.com/janegbert/sessionkit.git
+git clone https://github.com/Calq-dev/sessionkit.git
 cd sessionkit
 cargo install --path . --locked
 

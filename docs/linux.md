@@ -15,7 +15,7 @@ Rust). On Ubuntu:
 sudo apt-get update
 sudo apt-get install build-essential git curl
 # Install/update Rust with rustup from https://rustup.rs if needed.
-git clone https://github.com/janegbert/sessionkit.git
+git clone https://github.com/Calq-dev/sessionkit.git
 cd sessionkit
 cargo install --path . --locked
 export PATH="$HOME/.cargo/bin:$PATH"
