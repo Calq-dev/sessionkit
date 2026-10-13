@@ -5,6 +5,7 @@ import { expect, mock, test } from "claude-code/testing";
 const COLD = {
   cold: true,
   cost: "$2.82",
+  half: "$1.41",
   fresh: true,
   question: "The prompt cache of this session has expired. Where do you go on?",
   stop: "sessionkit: your message is back in the prompt box.",
@@ -63,13 +64,13 @@ test("a warm session goes through without a question", async ($, on) => {
 test("continue here acks and lets the message through", async ($, on) => {
   const seen = world(on, COLD, "Continue here");
   const result = await $.prompt.submit(typed("hello"));
-  expect(seen.asked).toEqual([["Compact and continue", "Continue here ($2.82)"]]);
+  expect(seen.asked).toEqual([["Fresh session with what matters (~15K)", "Compact here (keeps about half, ~$1.41)", "Continue here ($2.82)"]]);
   expect(seen.runs).toEqual(["cold-check", "cold-choice continue"]);
   expect(result).toEqual({ text: "hello" });
 });
 
-test("compact and continue hands the message over and keeps it out of this one", async ($, on) => {
-  const seen = world(on, COLD, "Compact and continue");
+test("a fresh session hands the message over and keeps it out of this one", async ($, on) => {
+  const seen = world(on, COLD, "Fresh session");
   const result = await $.prompt.submit(typed("hello"));
   expect(seen.runs).toEqual(["cold-check", "cold-choice fresh"]);
   expect(seen.entered).toEqual([]);
@@ -80,7 +81,7 @@ test("new work is offered clear and continue beside compact: /clear here, then t
   const clock = mock.clock(on);
   const seen = world(on, { ...COLD, route: "search" }, "Clear and continue");
   const result = await $.prompt.submit(typed("something new"));
-  expect(seen.asked).toEqual([["Clear and continue", "Compact and continue", "Continue here ($2.82)"]]);
+  expect(seen.asked).toEqual([["Clear and continue", "Fresh session with what matters (~15K)", "Compact here (keeps about half, ~$1.41)", "Continue here ($2.82)"]]);
   expect(seen.runs).toEqual(["cold-check"]);
   expect(result.drop).toContain("clearing");
   await clock.advance(0);
@@ -91,14 +92,14 @@ test("new work is offered clear and continue beside compact: /clear here, then t
 test("without a way to open a fresh session, stop puts the message back", async ($, on) => {
   const seen = world(on, { ...COLD, fresh: false }, "Stop");
   const result = await $.prompt.submit(typed("hello"));
-  expect(seen.asked).toEqual([["Compact and continue", "Continue here ($2.82)", "Stop"]]);
+  expect(seen.asked).toEqual([["Compact here (keeps about half, ~$1.41)", "Continue here ($2.82)", "Stop"]]);
   expect(seen.filled).toEqual(["hello"]);
   expect(result).toEqual({ drop: COLD.stop });
 });
 
-test("without a handoff, compact and continue acks, runs /compact, and sends the message after it", async ($, on) => {
+test("compact here acks, runs /compact, and sends the message after it", async ($, on) => {
   const clock = mock.clock(on);
-  const seen = world(on, { ...COLD, fresh: false }, "Compact and continue");
+  const seen = world(on, { ...COLD, fresh: false }, "Compact here");
   const result = await $.prompt.submit(typed("go on"));
   expect(seen.runs).toEqual(["cold-check", "cold-choice continue"]);
   expect(result.drop).toContain("compacting first");
@@ -107,6 +108,16 @@ test("without a handoff, compact and continue acks, runs /compact, and sends the
   await $.session.compact({ trigger: "manual", messages: [{ role: "user", text: "hello", toolUses: [] }] });
   await clock.settle();
   expect(seen.entered).toContain("go on");
+});
+
+test("with a handoff, compact here still compacts this session instead of starting a fresh one", async ($, on) => {
+  const clock = mock.clock(on);
+  const seen = world(on, COLD, "Compact here");
+  const result = await $.prompt.submit(typed("go on"));
+  expect(seen.runs).toEqual(["cold-check", "cold-choice continue"]);
+  expect(result.drop).toContain("compacting first");
+  await clock.settle();
+  expect(seen.commands).toEqual(["compact"]);
 });
 
 test("a dismissed dialog puts the message back", async ($, on) => {

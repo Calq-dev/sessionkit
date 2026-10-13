@@ -6,6 +6,17 @@ usage data. Versions before the public repository are retained as historical
 release notes, not links to public release artifacts. The project was named
 `jev-start` before version 0.3.0.
 
+## 0.25.0 — 2026-10-13
+
+- The cold-cache dialog names its two ways apart. **Compact and continue** did two things
+  depending on the terminal: a fresh session with only what matters where one could be opened,
+  /compact here elsewhere. It is now **Fresh session with what matters (~15K)** and **Compact
+  here (keeps about half, ~$)**, both offered where a fresh session can be opened, so a person
+  who wants to keep this session can. `hook cold-check` answers `half`, the cost estimate of a
+  compacted cold write.
+- The repository is public at `Calq-dev/sessionkit`; releases with binaries for Apple Silicon,
+  Intel Macs and Linux x86_64 are built there on each version tag.
+
 ## 0.24.0 — 2026-10-12
 
 - The architect reads the domain language with the architecture. A repository with a

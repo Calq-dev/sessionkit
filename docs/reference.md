@@ -159,16 +159,20 @@ apart.
   ```text
   The prompt cache of this session has expired. This message writes 352K tokens to the cache
   again: about $2.82, and every later message re-reads them ($0.070 each). …
-  ❯ Compact and continue
+  ❯ Fresh session with what matters (~15K)
+    Compact here (keeps about half, ~$1.41)
     Continue here ($2.82)
   ```
 
-  **Compact and continue** keeps only what matters for your message, so the cache write is
-  small. Where it can, it closes this session and continues in a fresh one:
-  `sessionkit start --session <this session> "your message"`; elsewhere (see below) it runs
-  /compact here and then sends your message, and the choice also offers **Stop**. When Jev finds
+  **Fresh session** closes this session and continues your message in a fresh one, in the same
+  terminal: `sessionkit start --session <this session> "your message"`, which hands over only
+  what matters for it, about 15K tokens. It is offered where something in the terminal can open
+  the next session (see below). **Compact here** keeps this session: it runs /compact, which
+  cuts the tool output that is no longer needed and keeps all text, about half, and then sends
+  your message. The half is an estimate from the compaction measurements, not a run beforehand.
+  Without a way to open a fresh session the choice also offers **Stop**. When Jev finds
   the message clearly new work rather than a continuation (the route question of `start`, 0.7 or
-  more for a new topic), the question says so and offers **Clear and continue** instead: it runs
+  more for a new topic), the question says so and offers **Clear and continue** first: it runs
   /clear in this session and then sends your message, so nothing of the old context is written
   again. **Continue here** sends it. Stop, or closing the dialog, puts your message back in the prompt box. The dialog is the engine's,
   so asking costs no model call. It comes from the plugin that `setup` installs, a function hook
