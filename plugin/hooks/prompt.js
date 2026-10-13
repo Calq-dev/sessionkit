@@ -1,6 +1,6 @@
 // sessionkit's choice before a message to a cold session: when the prompt cache has expired and
 // writing the context again is expensive, ask in Claude Code's own dialog whether to go on here
-// or compacted first, so the cache write holds only what matters. In a warm session whose context has grown large
+// in a fresh session with only what matters, or compacted here first, so the cache write is small. In a warm session whose context has grown large
 // (375K tokens by default), ask whether to compact first, since every message re-reads it all. When
 // a subagent of the session has grown that large and no auto-compact window is set, ask whether to
 // set one, since without it a subagent never compacts. The dialog is the engine's, so asking costs no
@@ -17,6 +17,7 @@ const TIMEOUT_MS = 10_000;
 
 const STOP = "Stop";
 const COMPACT = "Compact and continue";
+const FRESH = "Fresh session with what matters (~15K)";
 const CLEAR = "Clear and continue";
 const CONTINUE = "Continue";
 
@@ -118,12 +119,14 @@ export const register = (on) => {
     if (check.subagent) return subagent($, event, next, check);
     if (!check.cold) return next(event);
 
-    // Compact and continue means one thing to the person; how differs: with a handoff, a fresh
-    // session continues this one with only what matters; without one, /compact compacts it here.
-    // Compact is always offered. A message that looks like new work also gets Clear, first:
-    // /clear empties this session in this terminal and sends the message there.
+    // Two ways to make the cache write small, named apart: with a handoff, a fresh session
+    // continues this one with only what matters (about 15K tokens); /compact here cuts tool output
+    // and keeps about half, in this session. The half is an estimate from the compaction
+    // measurements, not a run of Jev beforehand. A message that looks like new work also gets
+    // Clear, first: /clear empties this session in this terminal and sends the message there.
     const here = `Continue here (${check.cost})`;
-    const options = check.route === "search" ? [CLEAR, COMPACT, here] : check.fresh ? [COMPACT, here] : [COMPACT, here, STOP];
+    const compact = `Compact here (keeps about half, ~${check.half})`;
+    const options = check.route === "search" ? [CLEAR, FRESH, compact, here] : check.fresh ? [FRESH, compact, here] : [compact, here, STOP];
     let choice;
     try {
       choice = await $.ui.ask(check.question, { options, header: "Cold cache" });
@@ -131,13 +134,13 @@ export const register = (on) => {
       choice = STOP; // dismissed
     }
     if (choice === CLEAR) return clearFirst($, event);
-    if (choice === here || (choice === COMPACT && !check.fresh)) {
+    if (choice === here || choice === compact) {
       // Without the ack the settings hook stops the message once; sending it again goes through.
       await sessionkit($, ["cold-choice", "continue"], input).catch(() => undefined);
       return choice === here ? next(event) : compactFirst($, event, [["compact", ""]]);
     }
     try {
-      if (choice === COMPACT) {
+      if (choice === FRESH) {
         const answer = await sessionkit($, ["cold-choice", "fresh"], input);
         if (answer.ok) return { drop: "sessionkit: closing this session; your message continues in a fresh one." };
       }

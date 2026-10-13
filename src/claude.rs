@@ -613,21 +613,26 @@ fn cold_check(input: &Value) -> Result<Value> {
         None => false,
     };
     let search = is_new_work(js::str_of(&input, "transcript_path"), prompt);
-    let cost = usd(state.cold_call.unwrap_or(f64::NAN));
+    let cold_call = state.cold_call.unwrap_or(f64::NAN);
+    let cost = usd(cold_call);
+    let half = usd(cold_call / 2.0);
     let restart = format!("sessionkit start --session {} \"your prompt\"", js::head(&id, 8));
     Ok(json!({
         "cold": true,
         "cost": cost,
+        "half": half,
         "fresh": fresh,
         "route": if search { "search" } else { "session" },
         "question": format!("The prompt cache of this session has expired. This message writes {} tokens to the \
             cache again: about {cost}, and every later message re-reads them ({} each). {}", tokens(state.context),
             usd(state.per_call.unwrap_or(f64::NAN)),
             if search { "This message looks like new work: Clear and continue empties this session (/clear) and \
-                sends it there; Compact and continue keeps only what matters for this message. Either way the \
-                cache write is small. Where do you go on?" }
-            else { "Compact and continue keeps only what matters for this message, so the cache write is small. \
-                Where do you go on?" }),
+                sends it there, so nothing is written again. Where do you go on?" }
+            else if fresh { "A fresh session continues this one with only what matters for this message, about \
+                15K tokens, in this terminal. Compact here keeps this session, cuts the tool output that is no \
+                longer needed, and keeps about half. Where do you go on?" }
+            else { "Compact here cuts the tool output that is no longer needed and keeps about half, so the cache \
+                write is smaller. Where do you go on?" }),
         "stop": format!("sessionkit: your message is back in the prompt box. To start fresh, exit and run: {restart}"),
     }))
 }
