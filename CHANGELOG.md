@@ -6,7 +6,7 @@ usage data. Versions before the public repository are retained as historical
 release notes, not links to public release artifacts. The project was named
 `jev-start` before version 0.3.0.
 
-## Unreleased
+## 0.25.0 — 2026-10-13
 
 - The cold-cache dialog names its two ways apart. **Compact and continue** did two things
   depending on the terminal: a fresh session with only what matters where one could be opened,
