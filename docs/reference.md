@@ -114,6 +114,12 @@ mcp: playwright             2,068     341K     2%    165    9%    4%        3%
 (5 minutes, or 1 hour when the call writes a 1-hour cache) that writes at least 20k tokens to
 the cache and reads less than it writes.
 
+**Cache rewrites without a pause** are the same large writes within the cache lifetime, with
+their cause: a compaction before the call, a model switch, or, from Claude Code's request
+records (2.1.300 and later), a changed system prompt or tool list, which rewrites the whole
+cache. `prefix unchanged` is a rewrite none of these explains; older transcripts have no
+request records and say so.
+
 **Cheaper to restart** lists sessions active in the last 14 days whose last context is above
 150k tokens. Per session it shows what one more call costs in cache reads now, the same after
 a fresh start of about 15k tokens, and the one-time write of a cold `--resume`, with the
@@ -170,7 +176,8 @@ apart.
   the next session (see below). **Compact here** keeps this session: it runs /compact, which
   cuts the tool output that is no longer needed and keeps all text, about half, and then sends
   your message. The half is an estimate from the compaction measurements, not a run beforehand.
-  Without a way to open a fresh session the choice also offers **Stop**. When Jev finds
+  It is left out when the session was just compacted, by /compact or by Claude Code's idle
+  compaction (2.1.299 and later), since compacting again would cut little. Without a way to open a fresh session the choice also offers **Stop**. When Jev finds
   the message clearly new work rather than a continuation (the route question of `start`, 0.7 or
   more for a new topic), the question says so and offers **Clear and continue** first: it runs
   /clear in this session and then sends your message, so nothing of the old context is written

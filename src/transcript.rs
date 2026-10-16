@@ -53,6 +53,13 @@ impl Entry {
         line.contains("\"usage\"")
     }
 
+    /// A quick test on the raw line: a request record of Claude Code 2.1.300 and later
+    /// (`api-request`, `api-request-shape`, `api-request-blob`), which repeats a request's system
+    /// prompt, tools or messages; it is no call, tool result or compaction.
+    pub fn is_request_record(line: &str) -> bool {
+        line.starts_with("{\"type\":\"api-request")
+    }
+
     /// A quick test on the raw line, before parsing: false means it is surely no compaction.
     pub fn may_be_compaction(line: &str) -> bool {
         line.contains("\"compact_boundary\"")
