@@ -146,9 +146,11 @@ export async function close($, turn, answer, options) {
       `(${Number(found.new_term).toFixed(2)}). Name it by a term the glossary has, or put the new term to the person; ` +
       `a term they confirm, ${ARCHITECT} adds to GLOSSARY.md with a prompt that starts with \`Record.\`.`);
   }
-  for (const note of open) points.push(`A note of this turn was not dealt with:\n${note.split("\n\n")[0]}`);
+  // The note itself, with how to deal with it, is in the agent's context already: its first line is enough.
+  for (const note of open) points.push(`Note not dealt with: ${note.split("\n")[0].replace(`${PREFIX} (Jev): `, "")}`);
   if (points.length === 0) return;
-  const text = `${PREFIX} (Jev): before this work is left, deal with the following; then go on.\n\n${points.join("\n\n")}`;
+  const text = `${PREFIX} (Jev): open before you go on:\n${points.map((point) => `- ${point}`).join("\n")}` +
+    (open.length ? "\nDeal with each note as it says, or put it to the person." : "");
   await $.prompt.submit({ text }).catch((error) => $.ui.log(`${PREFIX}: follow-up not sent (${reason(error)})`));
 }
 
