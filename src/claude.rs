@@ -122,6 +122,7 @@ fn state_for(input: &Value) -> Option<CacheState> {
         warm,
         left,
         ttl,
+        compacted: from_transcript.as_ref().is_some_and(|state| state.compacted),
         last_call_time: from_transcript.as_ref().map_or(f64::NAN, |state| state.last_call_time),
         last_call_cold: from_transcript.as_ref().is_some_and(|state| state.last_call_cold),
         per_call: Some(rate.read(context)),
@@ -622,15 +623,21 @@ fn cold_check(input: &Value) -> Result<Value> {
         "cost": cost,
         "half": half,
         "fresh": fresh,
+        // Just compacted (idle compaction, /compact): compacting again would cut little.
+        "compacted": state.compacted,
         "route": if search { "search" } else { "session" },
         "question": format!("The prompt cache of this session has expired. This message writes {} tokens to the \
             cache again: about {cost}, and every later message re-reads them ({} each). {}", tokens(state.context),
             usd(state.per_call.unwrap_or(f64::NAN)),
             if search { "This message looks like new work: Clear and continue empties this session (/clear) and \
                 sends it there, so nothing is written again. Where do you go on?" }
+            else if fresh && state.compacted { "This session was just compacted. A fresh session continues it with \
+                only what matters for this message, about 15K tokens, in this terminal. Where do you go on?" }
             else if fresh { "A fresh session continues this one with only what matters for this message, about \
                 15K tokens, in this terminal. Compact here keeps this session, cuts the tool output that is no \
                 longer needed, and keeps about half. Where do you go on?" }
+            else if state.compacted { "This session was just compacted; compacting again would cut little. \
+                Where do you go on?" }
             else { "Compact here cuts the tool output that is no longer needed and keeps about half, so the cache \
                 write is smaller. Where do you go on?" }),
         "stop": format!("sessionkit: your message is back in the prompt box. To start fresh, exit and run: {restart}"),

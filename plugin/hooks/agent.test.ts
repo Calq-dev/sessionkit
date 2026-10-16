@@ -34,3 +34,10 @@ test("a refused spawn logs nothing", async ($, on) => {
   expect(result).toEqual({ deny: "not allowed" });
   expect(seen.runs).toEqual([]);
 });
+
+test("a resumed agent was logged at its spawn and is not logged again", async ($, on) => {
+  const seen = world(on, { model: "claude-sonnet-5-5", agentId: "agent-1" });
+  await $.agent.spawn({ ...SPAWN, resume: { agentId: "agent-1" } });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(seen.runs).toEqual([]);
+});

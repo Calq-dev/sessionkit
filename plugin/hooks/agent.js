@@ -12,6 +12,8 @@ const TIMEOUT_MS = 30_000;
 /** @type {import('claude-code').Register} */
 export const register = (on) => {
   on("agent.spawn", async ($, event, next) => {
+    // A resumed agent was logged at its spawn.
+    if (event.resume !== undefined) return next(event);
     const result = await next(event);
     if (!result.agentId) return result;
     const input = {

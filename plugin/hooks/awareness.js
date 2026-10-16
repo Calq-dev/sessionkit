@@ -87,7 +87,8 @@ export const register = (on, options) => {
 
   // Every spawn; the matcher only sets this hook apart from the plugin's others on agent.spawn.
   on("agent.spawn", { prompt: /[\s\S]/ }, async ($, event, next) => {
-    if (!start) return next(event);
+    // A resumed agent has the note from its spawn and keeps its count; Claude Code ignores a rewrite there.
+    if (!start || event.resume !== undefined) return next(event);
     const result = await next({ ...event, prompt: `${event.prompt}\n\n${start.reason}` });
     if (result.agentId) spawned(result.agentId, event.description);
     return result;

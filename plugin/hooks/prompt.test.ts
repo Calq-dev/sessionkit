@@ -97,6 +97,18 @@ test("without a way to open a fresh session, stop puts the message back", async 
   expect(result).toEqual({ drop: COLD.stop });
 });
 
+test("a session just compacted (idle compaction, /compact) is not offered compact here again", async ($, on) => {
+  const seen = world(on, { ...COLD, compacted: true }, "Continue here");
+  await $.prompt.submit(typed("hello"));
+  expect(seen.asked).toEqual([["Fresh session with what matters (~15K)", "Continue here ($2.82)"]]);
+});
+
+test("just compacted and no way to open a fresh session: continue or stop", async ($, on) => {
+  const seen = world(on, { ...COLD, compacted: true, fresh: false }, "Continue here");
+  await $.prompt.submit(typed("hello"));
+  expect(seen.asked).toEqual([["Continue here ($2.82)", "Stop"]]);
+});
+
 test("compact here acks, runs /compact, and sends the message after it", async ($, on) => {
   const clock = mock.clock(on);
   const seen = world(on, { ...COLD, fresh: false }, "Compact here");
