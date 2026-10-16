@@ -126,7 +126,9 @@ export const register = (on) => {
     // Clear, first: /clear empties this session in this terminal and sends the message there.
     const here = `Continue here (${check.cost})`;
     const compact = `Compact here (keeps about half, ~${check.half})`;
-    const options = check.route === "search" ? [CLEAR, FRESH, compact, here] : check.fresh ? [FRESH, compact, here] : [compact, here, STOP];
+    // Just compacted (idle compaction, /compact): compacting again would cut little.
+    const again = check.compacted ? [] : [compact];
+    const options = check.route === "search" ? [CLEAR, FRESH, ...again, here] : check.fresh ? [FRESH, ...again, here] : [...again, here, STOP];
     let choice;
     try {
       choice = await $.ui.ask(check.question, { options, header: "Cold cache" });

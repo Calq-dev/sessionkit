@@ -6,6 +6,21 @@ usage data. Versions before the public repository are retained as historical
 release notes, not links to public release artifacts. The project was named
 `jev-start` before version 0.3.0.
 
+## 0.26.0 — 2026-10-16
+
+- After a compaction the cold-cache dialog no longer offers **Compact here**: compacting again
+  would cut little. This covers /compact and the idle compaction of Claude Code 2.1.299 and
+  later, which compacts a conversation over 200K tokens before its one-hour cache expires.
+- Claude Code 2.1.299 raises `agent.spawn` when a subagent is resumed. sessionkit's spawn hooks
+  pass a resume through: the agent's route is not logged twice, its cost-note count is kept, and
+  no guidance is appended where Claude Code ignores a rewrite.
+- The architect's follow-up names an open note by its first line. The note itself, with how to
+  deal with it, is in the agent's context already.
+- `sessionkit usage` shows **Cache rewrites without a pause** with their cause: a compaction, a
+  model switch, or a changed system prompt or tool list, read from Claude Code's request
+  records (2.1.300 and later). Those records are skipped before parsing elsewhere, and no longer
+  count a tool result twice in `usage --tools`.
+
 ## 0.25.0 — 2026-10-13
 
 - The cold-cache dialog names its two ways apart. **Compact and continue** did two things

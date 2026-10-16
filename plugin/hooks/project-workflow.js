@@ -27,7 +27,8 @@ export const register = (on, options) => {
     return { ...result, sections: [...result.sections, { id: SECTION, scope: "session", text: GUIDANCE }] };
   });
   on("agent.spawn", { prompt: /[\s\S]+/ }, async ($, event, next) => {
-    if (event.prompt.includes(GUIDANCE)) return next(event);
+    // A resumed agent has the guidance from its spawn; Claude Code ignores a rewrite there.
+    if (event.resume !== undefined || event.prompt.includes(GUIDANCE)) return next(event);
     return next({ ...event, prompt: `${event.prompt}\n\n${GUIDANCE}` });
   });
 };

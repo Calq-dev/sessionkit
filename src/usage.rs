@@ -96,6 +96,11 @@ fn parse_arguments(argv: &[String]) -> Options {
 struct Call {
     time: f64,
     call: ApiCall,
+    /// Hashes of the request's system prompt and tool list, from Claude Code's request records
+    /// (2.1.300 and later); None in older transcripts.
+    prefix: Option<(u64, u64)>,
+    /// A compaction came between this call and the one before it.
+    after_compaction: bool,
 }
 
 impl std::ops::Deref for Call {
@@ -202,10 +207,34 @@ fn read_calls<'a>(file: &'a TranscriptFile) -> Result<(Transcript<'a>, Vec<Strin
     let mut ids = Vec::new();
     let mut index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     let (mut title, mut cwd) = (String::new(), String::new());
+    // From the request records: each shape's prefix, each request's shape, each call's request.
+    let mut shapes: std::collections::HashMap<String, (u64, u64)> = std::collections::HashMap::new();
+    let mut requests: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut refs: Vec<Option<String>> = Vec::new();
+    let mut compacted = false;
     for line in std::io::BufReader::new(handle).split(b'\n') {
         let Ok(line) = line else { break };
         let line = String::from_utf8_lossy(&line);
         let line = line.strip_suffix('\r').unwrap_or(&line);
+        if Entry::is_request_record(line) {
+            if line.starts_with("{\"type\":\"api-request-blob\"") {
+                continue; // the messages of a request: neither its prefix nor a call
+            }
+            let Some(entry) = Entry::parse(line) else { continue };
+            let value = entry.value();
+            let shape = js::str_of(value, "shapeHash").to_string();
+            if entry.kind() == "api-request-shape" {
+                let hash = |part: &str| fingerprint(&value["shape"][part].to_string());
+                shapes.insert(shape, (hash("system"), hash("tools")));
+            } else if entry.kind() == "api-request" {
+                requests.insert(js::str_of(value, "id").to_string(), shape);
+            }
+            continue;
+        }
+        if Entry::may_be_compaction(line) && Entry::parse(line).is_some_and(|e| e.compaction().is_some()) {
+            compacted = true;
+            continue;
+        }
         if !Entry::may_be_call(line) && !line.contains("\"ai-title\"") {
             continue;
         }
@@ -231,9 +260,20 @@ fn read_calls<'a>(file: &'a TranscriptFile) -> Result<(Transcript<'a>, Vec<Strin
         }
         index.insert(id.clone(), calls.len());
         ids.push(id);
-        calls.push(Call { time: entry.time(), call });
+        refs.push(Some(js::str_of(entry.value(), "requestRef").to_string()).filter(|r| !r.is_empty()));
+        calls.push(Call { time: entry.time(), call, prefix: None, after_compaction: std::mem::take(&mut compacted) });
+    }
+    for (call, request) in calls.iter_mut().zip(refs) {
+        call.prefix = request.and_then(|r| requests.get(&r)).and_then(|shape| shapes.get(shape)).copied();
     }
     Ok((Transcript { file, calls, title, cwd }, ids))
+}
+
+fn fingerprint(text: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut hasher);
+    hasher.finish()
 }
 
 // ---------------------------------------------------------------- adding up
@@ -304,6 +344,43 @@ fn rebuilds_of(calls: &[Call]) -> Vec<Rebuild> {
         }
     }
     rebuilds
+}
+
+/// A cache rewrite without a pause: a call within the cache lifetime that writes a large context
+/// and reads less than it writes, with what Claude Code's request records show changed.
+struct Rewrite {
+    cause: &'static str,
+    tokens: f64,
+    cost: f64,
+}
+
+fn rewrites_of(calls: &[Call]) -> Vec<Rewrite> {
+    let mut rewrites = Vec::new();
+    for pair in calls.windows(2) {
+        let (before, call) = (&pair[0], &pair[1]);
+        let write = call.write();
+        let ttl = if call.write1h > call.write5m { Ttl::OneHour } else { Ttl::FiveMinutes };
+        if call.time - before.time > ttl.ms() || write < REBUILD_MIN_TOKENS || write <= call.read {
+            continue; // a pause is a rebuild; a small or mostly read write is the turn's own growth
+        }
+        let cause = if call.after_compaction {
+            "compaction"
+        } else if call.model != before.model {
+            "model switch"
+        } else {
+            match (before.prefix, call.prefix) {
+                (Some((system_a, tools_a)), Some((system_b, tools_b))) => match (system_a != system_b, tools_a != tools_b) {
+                    (true, true) => "system prompt and tools changed",
+                    (true, false) => "system prompt changed",
+                    (false, true) => "tool list changed",
+                    (false, false) => "prefix unchanged",
+                },
+                _ => "no request records (before 2.1.300)",
+            }
+        };
+        rewrites.push(Rewrite { cause, tokens: write, cost: cost_of(call).map_or(0.0, |cost| cost.write) });
+    }
+    rewrites
 }
 
 struct SubagentRow {
@@ -378,6 +455,8 @@ struct Report {
     sessions: Vec<SessionRow>,
     subagents: Vec<SubagentRow>,
     rebuilds: (usize, f64, f64, usize),
+    /// Per cause: count, tokens, cost.
+    rewrites: Vec<(&'static str, usize, f64, f64)>,
     restart_candidates: Vec<usize>,
     unpriced_models: Vec<String>,
 }
@@ -472,6 +551,13 @@ fn summarize(transcripts: &[Transcript], options: &Options) -> Report {
     }).collect();
 
     let all_rebuilds: Vec<Rebuild> = sessions.values().flat_map(|session| rebuilds_of(&session.calls)).collect();
+    let mut rewrites: IndexMap<&'static str, (usize, f64, f64)> = IndexMap::new();
+    for rewrite in sessions.values().flat_map(|session| rewrites_of(&session.calls)) {
+        let entry = rewrites.entry(rewrite.cause).or_default();
+        *entry = (entry.0 + 1, entry.1 + rewrite.tokens, entry.2 + rewrite.cost);
+    }
+    let mut rewrites: Vec<(&'static str, usize, f64, f64)> = rewrites.into_iter().map(|(cause, (n, t, c))| (cause, n, t, c)).collect();
+    rewrites.sort_by(|a, b| b.3.total_cmp(&a.3));
     rows.sort_by(|a, b| b.cost.partial_cmp(&a.cost).unwrap_or(std::cmp::Ordering::Equal));
     let mut restart_candidates: Vec<usize> = (0..rows.len())
         .filter(|&i| rows[i].last_active >= recent && rows[i].last_context >= RESTART_MIN_CONTEXT && rows[i].per_call_now.is_some())
@@ -498,6 +584,7 @@ fn summarize(transcripts: &[Transcript], options: &Options) -> Report {
             all_rebuilds.iter().fold(0.0, |s, r| s + r.cost),
             all_rebuilds.iter().filter(|r| r.gap > 3600000.0).count(),
         ),
+        rewrites,
         restart_candidates,
         unpriced_models: unpriced_models.into_iter().collect(),
     }
@@ -517,6 +604,9 @@ fn report_json(report: &Report) -> Value {
         "rebuilds": {
             "count": report.rebuilds.0, "tokens": num(report.rebuilds.1), "cost": num(report.rebuilds.2), "afterAnHour": report.rebuilds.3,
         },
+        "rewrites": report.rewrites.iter().map(|(cause, count, tokens, cost)| json!({
+            "cause": cause, "count": count, "tokens": num(*tokens), "cost": num(*cost),
+        })).collect::<Vec<_>>(),
         "restartCandidates": report.restart_candidates.iter().map(|&i| report.sessions[i].json()).collect::<Vec<_>>(),
         "unpricedModels": report.unpriced_models,
     })
@@ -611,6 +701,16 @@ fn render(report: &Report, options: &Options) -> String {
     out.push(format!("{count} calls wrote the context again after a pause longer than the cache lifetime (5 minutes or 1 hour): {} tokens, {} ({} of the total). \
         {after_an_hour} came after more than an hour.", tokens(rebuild_tokens), usd(rebuild_cost), share(rebuild_cost, total_cost)));
     out.push("A heuristic: a large cache write after a pause, larger than the cache read in the same call.".into());
+
+    if !report.rewrites.is_empty() {
+        out.push(String::new());
+        out.push(table("Cache rewrites without a pause (main sessions)",
+            format!("{}{}{}  cause", lpad("calls", 7), lpad("tokens", 9), lpad("cost", 9)),
+            report.rewrites.iter().map(|(cause, count, rewrite_tokens, cost)| format!("{}{}{}  {cause}",
+                lpad(&count.to_string(), 7), lpad(&tokens(*rewrite_tokens), 9), lpad(&usd(*cost), 9))).collect()));
+        out.push("The cause comes from Claude Code's request records (2.1.300 and later): a changed system prompt or tool \
+            list rewrites the whole cache.".into());
+    }
 
     if !report.subagents.is_empty() {
         out.push(table("Subagent cache writes (each agent's own timeline)",
@@ -788,6 +888,10 @@ fn read_tool_results(file: &TranscriptFile) -> Result<(String, Vec<(String, Tool
     for line in std::io::BufReader::new(handle).split(b'\n') {
         let Ok(line) = line else { break };
         let line = String::from_utf8_lossy(&line);
+        // A request record repeats messages the transcript already holds: its results would count twice.
+        if Entry::is_request_record(&line) {
+            continue;
+        }
         if !line.contains("\"tool_") && !Entry::may_be_call(&line) && !Entry::may_be_compaction(&line) {
             continue;
         }
@@ -976,6 +1080,50 @@ mod tests {
         assert_eq!(seen, [("t1", "Bash", 8.0, 2.0), ("t2", "mcp: playwright", 4.0, 1.0)]);
     }
 
+    fn transcript_of(name: &str, lines: &[Value]) -> TranscriptFile {
+        let path = std::env::temp_dir().join(format!("sessionkit-{name}-{}.jsonl", std::process::id()));
+        std::fs::write(&path, lines.iter().map(|line| line.to_string() + "\n").collect::<String>()).unwrap();
+        TranscriptFile { path, folder: String::new(), session: String::new(), subagent: false }
+    }
+
+    #[test]
+    fn a_request_record_does_not_count_a_result_twice() {
+        let file = transcript_of("blob", &[
+            json!({"type": "user", "timestamp": "2026-10-16T09:00:00Z",
+                "message": {"content": [{"type": "tool_result", "tool_use_id": "t1", "content": "1234"}]}}),
+            json!({"type": "api-request-blob", "hash": "h1",
+                "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "1234"}]}}),
+        ]);
+        let (_, results) = read_tool_results(&file).unwrap();
+        std::fs::remove_file(&file.path).unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn a_rewrite_without_a_pause_is_named_by_what_the_request_records_show_changed() {
+        let shape = |hash: &str, tools: Value| json!({"type": "api-request-shape", "shapeHash": hash,
+            "shape": {"system": [{"text": "prompt"}], "tools": tools}});
+        let request = |id: &str, hash: &str| json!({"type": "api-request", "id": id, "shapeHash": hash});
+        // Within the cache lifetime: read is the warm part, write the rewritten part.
+        let call = |id: &str, minute: u32, request: &str, read: f64, write: f64| json!({"type": "assistant",
+            "timestamp": format!("2026-10-16T09:{minute:02}:00Z"), "requestRef": request,
+            "message": {"id": id, "model": "claude-opus-5-5",
+                "usage": {"input_tokens": 1, "cache_read_input_tokens": read, "cache_creation_input_tokens": write}}});
+        let file = transcript_of("rewrites", &[
+            shape("s1", json!([{"name": "Read"}])), shape("s2", json!([{"name": "Read"}, {"name": "mcp__x__y"}])),
+            request("r1", "s1"), call("m1", 0, "r1", 0.0, 90_000.0),
+            request("r2", "s1"), call("m2", 1, "r2", 90_000.0, 2_000.0),
+            request("r3", "s2"), call("m3", 2, "r3", 4_000.0, 90_000.0),
+            json!({"type": "system", "subtype": "compact_boundary", "compactMetadata": {"trigger": "manual", "preTokens": 94_000, "postTokens": 30_000}}),
+            request("r4", "s2"), call("m4", 3, "r4", 4_000.0, 30_000.0),
+            call("m5", 4, "", 4_000.0, 60_000.0),
+        ]);
+        let (transcript, _) = read_calls(&file).unwrap();
+        std::fs::remove_file(&file.path).unwrap();
+        let causes: Vec<&str> = rewrites_of(&transcript.calls).iter().map(|r| r.cause).collect();
+        assert_eq!(causes, ["tool list changed", "compaction", "no request records (before 2.1.300)"]);
+    }
+
     #[test]
     fn a_call_written_as_several_lines_counts_its_last_output() {
         // Claude Code writes a line per block; the first can carry the output count of the stream's start.
@@ -994,7 +1142,7 @@ mod tests {
     #[test]
     fn a_pause_within_the_one_hour_cache_is_no_rebuild() {
         let call = |minute: f64, write5m: f64, write1h: f64| Call { time: minute * 60000.0, call: ApiCall {
-            id: None, model: Some("claude-opus-5-5".into()), fast: false, input: 1.0, read: 0.0, write5m, write1h, output: 0.0 } };
+            id: None, model: Some("claude-opus-5-5".into()), fast: false, input: 1.0, read: 0.0, write5m, write1h, output: 0.0 }, prefix: None, after_compaction: false };
         let gaps = |calls: &[Call]| rebuilds_of(calls).iter().map(|r| r.gap / 60000.0).collect::<Vec<f64>>();
         assert_eq!(gaps(&[call(0.0, 0.0, 50000.0), call(30.0, 0.0, 50000.0), call(100.0, 0.0, 50000.0)]), [70.0]);
         assert_eq!(gaps(&[call(0.0, 50000.0, 0.0), call(30.0, 50000.0, 0.0)]), [30.0]);
@@ -1005,7 +1153,7 @@ mod tests {
         let file = |id: &str| TranscriptFile { path: PathBuf::from(format!("{id}.jsonl")), folder: "project".into(), session: "parent".into(), subagent: true };
         let call = |minute: f64| Call { time: minute * 60000.0, call: ApiCall {
             id: None, model: Some("claude-sonnet-4-6".into()), fast: false,
-            input: 1.0, read: 0.0, write5m: 50000.0, write1h: 0.0, output: 1.0 } };
+            input: 1.0, read: 0.0, write5m: 50000.0, write1h: 0.0, output: 1.0 }, prefix: None, after_compaction: false };
         let a = file("a");
         let b = file("b");
         let transcripts = [

@@ -89,6 +89,8 @@ pub struct CacheState {
     pub last_call_cold: bool,
     /// None when no transcript says it.
     pub ttl: Option<Ttl>,
+    /// A compaction came after the last call: compacting again would cut little.
+    pub compacted: bool,
     pub warm: bool,
     pub left: f64,
     pub per_call: Option<f64>,
@@ -108,6 +110,7 @@ pub fn cache_state(transcript: &Path) -> Option<CacheState> {
         last_call_time: call.time,
         last_call_cold: call.write > call.read,
         ttl: Some(call.ttl),
+        compacted: call.compacted,
         warm: left > 0.0,
         left: if left.is_nan() { f64::NAN } else { left.max(0.0) },
         per_call: rate.map(|r| r.read(call.context)),
@@ -146,5 +149,7 @@ mod tests {
         assert_eq!(state.context, 39_000.0);
         assert!(!state.warm);
         assert!(state.last_call_cold);
+        assert!(state.compacted);
+        assert!(!state_of("uncompacted", &[call(912_000.0)]).compacted);
     }
 }

@@ -204,10 +204,11 @@ test("at the end of a turn the changes are read once more, and an open note or a
   expect(seen.checked[1]).toMatchObject({ kind: "turn", file: "", change: `edit ${EDIT.file_path}\n-${EDIT.old_string}\n+${EDIT.new_string}`, answer: "Done.", notes: [NOTE] });
   expect(seen.submitted.length).toBe(1);
   const text = seen.submitted[0].text;
-  expect(text).toContain("before this work is left, deal with the following; then go on.");
+  expect(text).toContain("open before you go on:");
   expect(text).toContain("This turn takes an architectural decision (0.82): read as structure.");
   expect(text).toContain("This turn names a domain concept the glossary does not define, or gives one a second name (0.88).");
-  expect(text).toContain("A note of this turn was not dealt with:\nsessionkit architect (Jev): the change to src/checkout/complete.rs");
+  expect(text).toContain("- Note not dealt with: the change to src/checkout/complete.rs");
+  expect(text).not.toContain("Start the agent");
   // The next turn starts clean: nothing is read twice.
   await $.turn.complete(TURN);
   await clock.settle();
